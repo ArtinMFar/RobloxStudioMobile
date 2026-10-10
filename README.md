@@ -12,8 +12,8 @@ Wine, Box64, DXVK and the Turnip/Vortek Vulkan drivers into an Android app.
 ## Download & install
 
 - APK: [`apk/RobloxStudioMobile.apk`](apk/RobloxStudioMobile.apk) (≈156 MB, stored with Git LFS —
-  use GitHub's "Download raw file" button). Version `11.2-studio8`, arm64-v8a only.
-- SHA-256: `4f0c45192d176bbf141b17deb78687728df68155e2914397926efc0e0cfa72cc`
+  use GitHub's "Download raw file" button). Version `11.2-studio9`, arm64-v8a only.
+- SHA-256: `2a92d1a3c46cdd0aa5f59c52c4416bf7fa336beb7a5bd77b005a1145260a180b`
 - Signing certificate SHA-256: `f7e1905ea92f6341e4d585f5514f7d0a17e36a2c18e5425e5f5cb0617e4c1e69`
   (personal key; the keystore and its password are not in this repo).
 
@@ -50,8 +50,10 @@ byte-for-byte, and a running Studio logs "Successfully received external login c
 
 The launcher has a **Save crash report** button. It writes `Download/RobloxStudioMobile-report.txt`
 with: Android's record of why the app last died (including native-crash backtraces on Android 12+),
-any Java crash trace, the Wine/Box64 output of the last two Studio sessions, Roblox Studio's own log
-files, and device/GPU/container info. If the previous session crashed, the launcher says so instead
+any Java crash trace, the Wine/Box64/DXVK output of the last two Studio sessions, which Windows
+programs started and ended and when, free memory and the memory used by Studio every 5 seconds,
+Android's memory warnings, how the session ended, Roblox Studio's crash dumps (exception and
+faulting module decoded) and log files, and device/GPU/container info. If the previous session crashed, the launcher says so instead
 of relaunching straight away.
 
 ## Requirements / expectations
@@ -116,6 +118,8 @@ emulator; it needs a real ARM64 phone.
   over the entire window and made it flicker with the start page.
 - `AppUtils.restartApplication` — ends the process with `killProcess` instead of `Runtime.exit`, which
   could SIGSEGV while the X server/audio/renderer threads were still running.
+- `studio/Diagnostics`, `TombstoneDecoder`, `MinidumpDecoder` — the crash report above; for the Studio
+  container `WINEDEBUG=-all,err+all` and `DXVK_LOG_LEVEL=warn` go to the session log.
 - `RootFSInstaller` — completion callback; `AndroidManifest` — new launcher + `roblox-studio-auth`
   link handler; release signing config read from `keystore.properties`.
 

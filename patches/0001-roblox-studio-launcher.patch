@@ -13,7 +13,7 @@ index f7415cf..ba0375d 100644
 +*.jks
 +*.keystore
 diff --git a/app/build.gradle b/app/build.gradle
-index 7690275..2a4b950 100644
+index 7690275..d0ce709 100644
 --- a/app/build.gradle
 +++ b/app/build.gradle
 @@ -1,5 +1,11 @@
@@ -34,8 +34,8 @@ index 7690275..2a4b950 100644
          targetSdkVersion 28
 -        versionCode 33
 -        versionName "11.2"
-+        versionCode 40
-+        versionName "11.2-studio8"
++        versionCode 41
++        versionName "11.2-studio9"
 +    }
 +
 +    signingConfigs {
@@ -115,10 +115,18 @@ index b197cea..83c5117 100644
      AHardwareBuffer_Desc buffDesc = {0};
      AHardwareBuffer_describe(hardwareBuffer, &buffDesc);
 diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
-index 667f1b3..839d55e 100644
+index 667f1b3..3df1d7c 100644
 --- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
 +++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
-@@ -66,6 +66,8 @@ import com.winlator.inputcontrols.ControlsProfile;
+@@ -45,6 +45,7 @@ import com.winlator.contentdialog.VKD3DConfigDialog;
+ import com.winlator.contentdialog.VirGLConfigDialog;
+ import com.winlator.contentdialog.WineD3DConfigDialog;
+ import com.winlator.core.AppUtils;
++import com.winlator.core.Callback;
+ import com.winlator.core.DefaultVersion;
+ import com.winlator.core.EnvVars;
+ import com.winlator.core.FileUtils;
+@@ -66,6 +67,8 @@ import com.winlator.inputcontrols.ControlsProfile;
  import com.winlator.inputcontrols.ExternalController;
  import com.winlator.inputcontrols.InputControlsManager;
  import com.winlator.math.Mathf;
@@ -127,11 +135,12 @@ index 667f1b3..839d55e 100644
  import com.winlator.renderer.GLRenderer;
  import com.winlator.services.ForegroundService;
  import com.winlator.widget.FrameRating;
-@@ -135,12 +137,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -135,12 +138,15 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
      private DebugDialog debugDialog;
      public int frameRatingWindowId = -1;
      private Win32AppWorkarounds win32AppWorkarounds;
 +    private static volatile boolean sessionRunning = false;
++    private Callback<String> sessionLog;
      private String screenEffectProfile;
  
      @Override
@@ -142,7 +151,7 @@ index 667f1b3..839d55e 100644
          AppUtils.hideSystemUI(this);
          AppUtils.keepScreenOn(this);
          setContentView(R.layout.xserver_display_activity);
-@@ -166,9 +170,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -166,9 +172,16 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
          rootFS = RootFS.find(this);
  
          if (!isGenerateWineprefix()) {
@@ -151,11 +160,28 @@ index 667f1b3..839d55e 100644
              container = containerManager.getContainerById(getIntent().getIntExtra("container_id", 0));
              containerManager.activateContainer(container);
 +            // Keep the Wine/Box64 output of Roblox Studio sessions for the in-app crash report.
-+            if (StudioInstaller.isStudioContainer(container)) ProcessHelper.addDebugCallback(Diagnostics.startSessionLog(this));
++            if (StudioInstaller.isStudioContainer(container)) {
++                sessionLog = Diagnostics.startSessionLog(this);
++                ProcessHelper.addDebugCallback(sessionLog);
++                Diagnostics.startResourceMonitor(this, sessionLog);
++            }
  
              boolean wineprefixNeedsUpdate = container.getExtra("wineprefixNeedsUpdate").equals("t");
              if (wineprefixNeedsUpdate) {
-@@ -341,6 +348,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -323,6 +336,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         ForegroundService.onResumeSession(this);
+     }
+ 
++    @Override
++    public void onTrimMemory(int level) {
++        super.onTrimMemory(level);
++        if (sessionLog != null) sessionLog.call("[app] Android memory warning (onTrimMemory level "+level+")");
++    }
++
+     @Override
+     public void onPause() {
+         ForegroundService.onPauseSession(this);
+@@ -341,6 +360,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
  
      @Override
      protected void onDestroy() {
@@ -163,15 +189,32 @@ index 667f1b3..839d55e 100644
          winHandler.stop();
          if (environment != null) environment.stopEnvironmentComponents();
          ForegroundService.stopSession(this);
-@@ -514,6 +522,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -514,6 +534,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
              String guestExecutable = "wine explorer /desktop="+desktopName+","+xServer.screenInfo+" "+getWineStartCommand();
              guestProgramLauncherComponent.setGuestExecutable(guestExecutable);
  
-+            if (StudioInstaller.isStudioContainer(container) && !enableWineDebug) envVars.put("WINEDEBUG", "-all,err+all");
++            if (StudioInstaller.isStudioContainer(container)) {
++                if (!enableWineDebug) envVars.put("WINEDEBUG", "-all,err+all");
++                // DXVK warnings/errors (e.g. a lost GPU device or failed allocation) into the session log.
++                envVars.put("DXVK_LOG_LEVEL", "warn");
++                envVars.put("DXVK_LOG_PATH", "none");
++            }
              envVars.putAll(container.getEnvVars());
              if (shortcut != null) envVars.putAll(shortcut.getExtra("envVars"));
              if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "1");
-@@ -948,6 +957,22 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -556,7 +582,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         }
+ 
+         guestProgramLauncherComponent.setEnvVars(envVars);
+-        guestProgramLauncherComponent.setTerminationCallback((status) -> exit());
++        guestProgramLauncherComponent.setTerminationCallback((status) -> {
++            if (sessionLog != null) sessionLog.call("[app] Wine session ended (main process exit status "+status+")");
++            exit();
++        });
+         environment.addComponent(guestProgramLauncherComponent);
+ 
+         if (isGenerateWineprefix()) {
+@@ -948,6 +977,22 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
          }
      }
  
@@ -194,7 +237,7 @@ index 667f1b3..839d55e 100644
      private boolean isGenerateWineprefix() {
          return getIntent().getBooleanExtra("generate_wineprefix", false);
      }
-@@ -976,6 +1001,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -976,6 +1021,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                      execPath = null;
                  }
              }
@@ -310,10 +353,10 @@ index 048f888..58f2da9 100644
  
 diff --git a/app/src/main/java/com/winlator/studio/Diagnostics.java b/app/src/main/java/com/winlator/studio/Diagnostics.java
 new file mode 100644
-index 0000000..bdf09b0
+index 0000000..bd950c9
 --- /dev/null
 +++ b/app/src/main/java/com/winlator/studio/Diagnostics.java
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,557 @@
 +package com.winlator.studio;
 +
 +import android.app.ActivityManager;
@@ -341,13 +384,16 @@ index 0000000..bdf09b0
 +import java.io.PrintWriter;
 +import java.io.RandomAccessFile;
 +import java.io.Writer;
++import java.nio.ByteBuffer;
 +import java.nio.charset.StandardCharsets;
 +import java.text.SimpleDateFormat;
 +import java.util.ArrayList;
 +import java.util.Arrays;
 +import java.util.Date;
++import java.util.HashMap;
 +import java.util.List;
 +import java.util.Locale;
++import java.util.Map;
 +
 +/**
 + * Collects what is needed to debug a failed Roblox Studio session on a phone without adb:
@@ -358,6 +404,8 @@ index 0000000..bdf09b0
 +    public static final String REPORT_NAME = "RobloxStudioMobile-report.txt";
 +    private static final String PREF_LAST_SEEN_EXIT = "studio_last_seen_exit_timestamp";
 +    private static final long MAX_SESSION_LOG_BYTES = 4L << 20;
++    private static final String MONITOR_TAG = "[monitor]";
++    private static final String PROCESS_TAG = "[proc]";
 +    private static boolean crashHandlerInstalled = false;
 +
 +    private Diagnostics() {}
@@ -405,17 +453,128 @@ index 0000000..bdf09b0
 +        final long[] written = {0};
 +        final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS ", Locale.ENGLISH);
 +        return (line) -> {
-+            if (written[0] > MAX_SESSION_LOG_BYTES) return;
-+            try {
-+                writer.write(timeFormat.format(new Date()));
-+                writer.write(line);
-+                writer.write('\n');
-+                // Flush every line: if the app dies natively, nothing buffered would survive.
-+                writer.flush();
-+                written[0] += line.length() + 1;
++            synchronized (writer) {
++                if (written[0] > MAX_SESSION_LOG_BYTES) return;
++                try {
++                    writer.write(timeFormat.format(new Date()));
++                    writer.write(line);
++                    writer.write('\n');
++                    // Flush every line: if the app dies natively, nothing buffered would survive.
++                    writer.flush();
++                    written[0] += line.length() + 1;
++                }
++                catch (IOException ignored) {}
 +            }
-+            catch (IOException ignored) {}
 +        };
++    }
++
++    /**
++     * While a session runs: every second, notes Wine processes that start or end ("[proc]" lines),
++     * and every 5 seconds logs free memory and how much of it this app's processes use
++     * ("[monitor]" lines). This tells a Windows program that crashed apart from one that was
++     * killed by Android (e.g. for memory).
++     */
++    public static void startResourceMonitor(final Context context, final Callback<String> log) {
++        Thread thread = new Thread(() -> {
++            Map<Integer, String> previous = null;
++            try {
++                for (int tick = 0; com.winlator.XServerDisplayActivity.isSessionRunning(); tick++) {
++                    List<ProcessInfo> processes = listOwnProcesses();
++                    Map<Integer, String> current = new HashMap<>();
++                    for (ProcessInfo process : processes) current.put(process.pid, process.name);
++                    if (previous != null) {
++                        for (Map.Entry<Integer, String> entry : previous.entrySet()) {
++                            if (!current.containsKey(entry.getKey())) log.call(PROCESS_TAG+" ended: "+entry.getValue()+"("+entry.getKey()+")");
++                        }
++                        for (ProcessInfo process : processes) {
++                            if (!previous.containsKey(process.pid)) log.call(PROCESS_TAG+" started: "+process.name+"("+process.pid+")");
++                        }
++                    }
++                    previous = current;
++                    if (tick % 5 == 0) log.call(describeResources(context, processes));
++                    Thread.sleep(1000);
++                }
++            }
++            catch (InterruptedException ignored) {}
++            catch (RuntimeException e) {
++                log.call(MONITOR_TAG+" stopped: "+e);
++            }
++        }, "studio-monitor");
++        thread.setDaemon(true);
++        thread.start();
++    }
++
++    private static final class ProcessInfo {
++        int pid;
++        String name;
++        long rssKb;
++    }
++
++    /** Processes of this app other than the app itself (Wine, Box64, wineserver, ...). */
++    private static List<ProcessInfo> listOwnProcesses() {
++        int myUid = android.os.Process.myUid();
++        int myPid = android.os.Process.myPid();
++        List<ProcessInfo> processes = new ArrayList<>();
++        File[] entries = new File("/proc").listFiles();
++        if (entries == null) return processes;
++        for (File entry : entries) {
++            String pidName = entry.getName();
++            if (pidName.isEmpty() || !Character.isDigit(pidName.charAt(0))) continue;
++            ProcessInfo process = new ProcessInfo();
++            String statusName = "?";
++            int uid = -1;
++            process.rssKb = -1;
++            try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(new File(entry, "status")))) {
++                String line;
++                while ((line = reader.readLine()) != null) {
++                    if (line.startsWith("Name:")) statusName = line.substring(5).trim();
++                    else if (line.startsWith("Uid:")) uid = Integer.parseInt(line.substring(4).trim().split("\\s+")[0]);
++                    else if (line.startsWith("VmRSS:")) process.rssKb = Long.parseLong(line.substring(6).trim().split("\\s+")[0]);
++                }
++                process.pid = Integer.parseInt(pidName);
++            }
++            catch (IOException | RuntimeException e) {
++                continue;
++            }
++            if (uid != myUid || process.pid == myPid) continue;
++            if (process.rssKb < 0) process.rssKb = 0;
++            process.name = processName(entry, statusName);
++            processes.add(process);
++        }
++        return processes;
++    }
++
++    private static String describeResources(Context context, List<ProcessInfo> processes) {
++        ActivityManager activityManager = (ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
++        ActivityManager.MemoryInfo memoryInfo = new ActivityManager.MemoryInfo();
++        activityManager.getMemoryInfo(memoryInfo);
++
++        long totalKb = 0;
++        for (ProcessInfo process : processes) totalKb += process.rssKb;
++        List<ProcessInfo> sorted = new ArrayList<>(processes);
++        sorted.sort((a, b) -> Long.compare(b.rssKb, a.rssKb));
++
++        StringBuilder sb = new StringBuilder();
++        sb.append(String.format(Locale.ENGLISH, "%s avail=%dMB low=%b threshold=%dMB | %d processes use %dMB:",
++            MONITOR_TAG, memoryInfo.availMem >> 20, memoryInfo.lowMemory, memoryInfo.threshold >> 20, processes.size(), totalKb >> 10));
++        for (int i = 0; i < Math.min(4, sorted.size()); i++) {
++            sb.append(String.format(Locale.ENGLISH, " %s=%dMB", sorted.get(i).name, sorted.get(i).rssKb >> 10));
++        }
++        return sb.toString();
++    }
++
++    /** The Windows program a Wine process runs (first *.exe argument), else the Linux process name. */
++    private static String processName(File procEntry, String statusName) {
++        try {
++            byte[] cmdline = java.nio.file.Files.readAllBytes(new File(procEntry, "cmdline").toPath());
++            for (String arg : new String(cmdline, StandardCharsets.UTF_8).split("\0")) {
++                if (!arg.toLowerCase(Locale.ENGLISH).endsWith(".exe")) continue;
++                int slash = Math.max(arg.lastIndexOf('/'), arg.lastIndexOf('\\'));
++                return arg.substring(slash + 1);
++            }
++        }
++        catch (IOException | RuntimeException ignored) {}
++        return statusName;
 +    }
 +
 +    /** A short description of an abnormal app exit that happened since the last call to {@link #acknowledgeExits}, or null. */
@@ -498,8 +657,13 @@ index 0000000..bdf09b0
 +        File javaCrash = new File(getDir(context), "java-crash.txt");
 +        sb.append(javaCrash.isFile() ? tail(javaCrash, 120) : "none\n");
 +
-+        sb.append("\n== Wine/Box64 output, last session ==\n").append(tail(new File(getDir(context), "session.log"), 250));
-+        sb.append("\n== Wine/Box64 output, session before ==\n").append(tail(new File(getDir(context), "session-prev.log"), 120));
++        File sessionLog = new File(getDir(context), "session.log");
++        sb.append("\n== How the last session ended ==\n").append(describeSessionEnd(sessionLog));
++        sb.append("\n== Wine/Box64 output, last session ([proc] = Windows/Linux process started or ended) ==\n").append(tailLines(sessionLog, 250, false));
++        sb.append("\n== Memory monitor, last session (every 5 s, newest last) ==\n").append(tailLines(sessionLog, 40, true));
++        sb.append("\n== Wine/Box64 output, session before ==\n").append(tailLines(new File(getDir(context), "session-prev.log"), 120, false));
++
++        if (container != null) appendCrashDumps(sb, new File(container.getRootDir(), ".wine/drive_c/users/xuser/AppData/Local/Roblox/logs"));
 +
 +        if (container != null) {
 +            File logsDir = new File(container.getRootDir(), ".wine/drive_c/users/xuser/AppData/Local/Roblox/logs");
@@ -509,6 +673,7 @@ index 0000000..bdf09b0
 +                Arrays.sort(logs, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
 +                if (logs.length > 0) {
 +                    sb.append("\n-- Errors in ").append(logs[0].getName()).append(" --\n").append(grep(logs[0], "Error|Critical|crash|Crash|Exception|fail", 80));
++                    sb.append("\n-- Graphics in ").append(logs[0].getName()).append(" --\n").append(grep(logs[0], "Graphics|graphics|D3D|Direct3D|Vulkan|GPU|Gpu|Render|VRAM|DeviceLost|OutOfMemory", 40));
 +                }
 +                for (int i = 0; i < Math.min(3, logs.length); i++) {
 +                    sb.append("\n-- ").append(logs[i].getName()).append(" (").append(timestamp(logs[i].lastModified())).append(") --\n");
@@ -638,6 +803,76 @@ index 0000000..bdf09b0
 +        }
 +    }
 +
++    /** Roblox Studio's crash handler keeps its files under logs/crashes; minidumps (.dmp) anywhere under logs are decoded. */
++    private static void appendCrashDumps(StringBuilder sb, File logsDir) {
++        List<File> files = new ArrayList<>();
++        collectFiles(new File(logsDir, "crashes"), files, 0);
++        files.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
++        sb.append("\n== Roblox Studio crash files (").append(files.size()).append(" under logs/crashes) ==\n");
++        String root = logsDir.getPath();
++        for (int i = 0; i < Math.min(15, files.size()); i++) {
++            File file = files.get(i);
++            sb.append(timestamp(file.lastModified())).append("  ").append(file.length()).append(" B  ").append(file.getPath().substring(root.length())).append('\n');
++        }
++        List<File> dumps = new ArrayList<>();
++        collectFiles(logsDir, dumps, 0);
++        dumps.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
++        for (File file : dumps) {
++            if (!file.getName().toLowerCase(Locale.ENGLISH).endsWith(".dmp")) continue;
++            sb.append("\n-- Newest dump: ").append(file.getName()).append(" --\n");
++            try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
++                ByteBuffer data = raf.getChannel().map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, raf.length());
++                String decoded = MinidumpDecoder.decode(data);
++                sb.append(decoded != null ? decoded : "(not a readable minidump)\n");
++            }
++            catch (IOException | RuntimeException e) {
++                sb.append("(could not read: ").append(e).append(")\n");
++            }
++            break;
++        }
++    }
++
++    private static void collectFiles(File dir, List<File> out, int depth) {
++        File[] entries = dir.listFiles();
++        if (entries == null || depth > 4) return;
++        for (File entry : entries) {
++            if (entry.isDirectory()) collectFiles(entry, out, depth + 1);
++            else out.add(entry);
++        }
++    }
++
++    private static String describeSessionEnd(File sessionLog) {
++        if (!sessionLog.isFile()) return "no session log\n";
++        String end = grep(sessionLog, "\\[app\\] Wine session ended", 1);
++        if (end.startsWith("(")) {
++            return "No end marker: the app was closed or killed before Windows (Wine) finished. If Android lists "+
++                "a low-memory kill or crash above, that is what ended it.\n";
++        }
++        return end+"Wine's main process ended by itself and the app then closed the session. Look for "+
++            "\"[proc] ended: RobloxStudioBeta.exe\" below: if no crash dump or Wine error comes with it, it was "+
++            "most likely killed from outside (e.g. by Android for memory).\n";
++    }
++
++    /** Last lines of the session log: either only the monitor samples or everything else. */
++    private static String tailLines(File file, int maxLines, boolean monitorLines) {
++        if (!file.isFile()) return "(none)\n";
++        java.util.ArrayDeque<String> lines = new java.util.ArrayDeque<>();
++        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(new java.io.FileInputStream(file), StandardCharsets.UTF_8))) {
++            String line;
++            while ((line = reader.readLine()) != null) {
++                if (line.contains(MONITOR_TAG) != monitorLines) continue;
++                lines.addLast(line);
++                if (lines.size() > maxLines) lines.removeFirst();
++            }
++        }
++        catch (IOException e) {
++            return "(could not read: "+e+")\n";
++        }
++        StringBuilder sb = new StringBuilder();
++        for (String line : lines) sb.append(line).append('\n');
++        return lines.isEmpty() ? "(none)\n" : sb.toString();
++    }
++
 +    private static String grep(File file, String regex, int maxLines) {
 +        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(regex);
 +        StringBuilder sb = new StringBuilder();
@@ -677,6 +912,146 @@ index 0000000..bdf09b0
 +
 +    private static String timestamp(long millis) {
 +        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH).format(new Date(millis));
++    }
++}
+diff --git a/app/src/main/java/com/winlator/studio/MinidumpDecoder.java b/app/src/main/java/com/winlator/studio/MinidumpDecoder.java
+new file mode 100644
+index 0000000..dc98df7
+--- /dev/null
++++ b/app/src/main/java/com/winlator/studio/MinidumpDecoder.java
+@@ -0,0 +1,134 @@
++package com.winlator.studio;
++
++import java.nio.ByteBuffer;
++import java.nio.ByteOrder;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Locale;
++
++/**
++ * Reads the crash summary out of a Windows minidump (.dmp, e.g. written by Roblox Studio's
++ * crash handler): exception code, faulting address and the module (EXE/DLL) it belongs to.
++ * Layout: MINIDUMP_HEADER, MINIDUMP_DIRECTORY, MINIDUMP_EXCEPTION_STREAM (type 6) and
++ * MINIDUMP_MODULE_LIST (type 4) from minidumpapiset.h.
++ */
++public final class MinidumpDecoder {
++    private static final int SIGNATURE = 0x504d444d; // "MDMP"
++    private static final int MODULE_LIST_STREAM = 4;
++    private static final int EXCEPTION_STREAM = 6;
++    private static final int MODULE_SIZE = 108;
++
++    private static final class Module {
++        long base;
++        long size;
++        String name;
++    }
++
++    private MinidumpDecoder() {}
++
++    /** Returns readable text, or null if the data isn't a minidump. */
++    public static String decode(ByteBuffer data) {
++        try {
++            return decodeOrThrow(data.duplicate().order(ByteOrder.LITTLE_ENDIAN));
++        }
++        catch (RuntimeException e) {
++            return null;
++        }
++    }
++
++    private static String decodeOrThrow(ByteBuffer b) {
++        if (b.getInt(0) != SIGNATURE) return null;
++        int streamCount = b.getInt(8);
++        int directoryRva = b.getInt(12);
++
++        int exceptionRva = -1;
++        int moduleListRva = -1;
++        for (int i = 0; i < streamCount && i < 1024; i++) {
++            int entry = directoryRva + i * 12;
++            int type = b.getInt(entry);
++            int rva = b.getInt(entry + 8);
++            if (type == EXCEPTION_STREAM) exceptionRva = rva;
++            else if (type == MODULE_LIST_STREAM) moduleListRva = rva;
++        }
++
++        List<Module> modules = new ArrayList<>();
++        if (moduleListRva >= 0) {
++            int count = b.getInt(moduleListRva);
++            for (int i = 0; i < count && i < 4096; i++) {
++                int m = moduleListRva + 4 + i * MODULE_SIZE;
++                Module module = new Module();
++                module.base = b.getLong(m);
++                module.size = b.getInt(m + 8) & 0xffffffffL;
++                module.name = readString(b, b.getInt(m + 20));
++                modules.add(module);
++            }
++        }
++
++        StringBuilder sb = new StringBuilder();
++        if (exceptionRva >= 0) {
++            int threadId = b.getInt(exceptionRva);
++            int record = exceptionRva + 8;
++            int code = b.getInt(record);
++            long address = b.getLong(record + 16);
++            int parameterCount = b.getInt(record + 24);
++            long[] parameters = new long[Math.min(parameterCount, 15)];
++            for (int i = 0; i < parameters.length; i++) parameters[i] = b.getLong(record + 32 + i * 8);
++
++            sb.append(String.format(Locale.ENGLISH, "Exception 0x%08X (%s) in thread 0x%x\n", code, describeCode(code, parameters), threadId));
++            sb.append(String.format(Locale.ENGLISH, "At 0x%016X = %s\n", address, locate(modules, address)));
++        }
++        else sb.append("No exception record in the dump\n");
++
++        sb.append("Modules: ").append(modules.size());
++        if (!modules.isEmpty()) {
++            sb.append(" (first: ").append(baseName(modules.get(0).name)).append(")");
++        }
++        sb.append('\n');
++        return sb.toString();
++    }
++
++    private static String locate(List<Module> modules, long address) {
++        for (Module module : modules) {
++            if (Long.compareUnsigned(address, module.base) >= 0 && Long.compareUnsigned(address - module.base, module.size) < 0) {
++                return String.format(Locale.ENGLISH, "%s+0x%X  (%s)", baseName(module.name), address - module.base, module.name);
++            }
++        }
++        return "unknown module (not in any loaded EXE/DLL: JIT code, Wine/Box64 or a bad jump)";
++    }
++
++    private static String describeCode(int code, long[] parameters) {
++        switch (code) {
++            case 0xC0000005: {
++                String access = parameters.length > 0 ? (parameters[0] == 0 ? "read of" : parameters[0] == 1 ? "write to" : parameters[0] == 8 ? "execute at" : "access to") : "access to";
++                return parameters.length > 1 ? String.format(Locale.ENGLISH, "access violation: %s 0x%X", access, parameters[1]) : "access violation";
++            }
++            case 0xC0000409: return "stack buffer overrun / fail-fast";
++            case 0xC00000FD: return "stack overflow";
++            case 0xC0000374: return "heap corruption";
++            case 0xC000001D: return "illegal instruction";
++            case 0xC0000096: return "privileged instruction";
++            case 0xC0000094: return "integer divide by zero";
++            case 0xC0000017: return "out of memory";
++            case 0xE06D7363: return "C++ exception";
++            case 0x80000003: return "breakpoint";
++            case 0x40000015: return "fatal app exit";
++            default: return "unknown code";
++        }
++    }
++
++    /** MINIDUMP_STRING: 32-bit length in bytes, then UTF-16LE characters. */
++    private static String readString(ByteBuffer b, int rva) {
++        if (rva <= 0) return "?";
++        int length = b.getInt(rva);
++        if (length < 0 || length > 4096) return "?";
++        byte[] chars = new byte[length];
++        for (int i = 0; i < length; i++) chars[i] = b.get(rva + 4 + i);
++        return new String(chars, StandardCharsets.UTF_16LE);
++    }
++
++    private static String baseName(String path) {
++        int slash = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
++        return slash >= 0 ? path.substring(slash + 1) : path;
 +    }
 +}
 diff --git a/app/src/main/java/com/winlator/studio/StudioAuthCallback.java b/app/src/main/java/com/winlator/studio/StudioAuthCallback.java

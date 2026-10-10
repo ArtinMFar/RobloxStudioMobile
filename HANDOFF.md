@@ -14,6 +14,7 @@ Work happens on branch `ccr-2bf8299c-iiiaw0`.
 | `gradle/maven-mirror.gradle` | Gradle init script: Maven Central via Google's mirror (repo.maven.apache.org answers HTTP 429 on some cloud machines). |
 | `apk/RobloxStudioMobile.apk` | Current signed build (Git LFS). |
 | `tests/drawable/` | Host test: compiles Winlator's real `drawable.c` + patched `Drawable.java`, checks the X server drawing fixes. |
+| `tests/minidump/` | Host test for `MinidumpDecoder` (synthetic x64 dump + a real Windows dump from Breakpad's test data). |
 | `colab/` | Colab scripts used for testing Studio under Wine (stage 1–5). |
 | `docs/` | Screenshot of Studio under Wine on Colab. |
 
@@ -42,11 +43,12 @@ must uninstall the old app first (and re-download Studio).
 ```bash
 ./build.sh                                  # creates build/winlator-app with the patch applied
 # edit files under build/winlator-app/app/src/main/...
-# bump versionCode/versionName in build/winlator-app/app/build.gradle (now 40 / 11.2-studio8)
+# bump versionCode/versionName in build/winlator-app/app/build.gradle (now 41 / 11.2-studio9)
 git -C build/winlator-app add -N .          # include new files in the diff
 git -C build/winlator-app diff > patches/0001-roblox-studio-launcher.patch
 ./build.sh                                  # rebuild from the patch to be sure it applies cleanly
 tests/drawable/run.sh                       # if X server drawing code changed
+tests/minidump/run.sh                       # if MinidumpDecoder changed
 # then: update README version + SHA-256, commit apk/ (LFS) and patch, push
 ```
 
@@ -59,9 +61,13 @@ tests/drawable/run.sh                       # if X server drawing code changed
   package→folder map read from `RobloxStudioInstaller.exe`), MD5 check, safe unzip (folder markers `\`).
 - `studio/StudioAuthCallback` – login callback is too long for WinHandler's 256-byte exec packet, so the
   command goes into `C:\windows\temp\roblox-studio-auth.bat`, run with `cmd.exe /c`.
-- `studio/Diagnostics`, `studio/TombstoneDecoder` – crash report: Android exit reasons (native tombstones
-  decoded from protobuf), Java crash trace, Wine/Box64 output (WINEDEBUG=-all,err+all for the Studio
-  container), Roblox Studio logs → `Download/RobloxStudioMobile-report.txt`.
+- `studio/Diagnostics`, `studio/TombstoneDecoder`, `studio/MinidumpDecoder` – crash report: Android exit
+  reasons (native tombstones decoded from protobuf), Java crash trace, Wine/Box64/DXVK output
+  (WINEDEBUG=-all,err+all and DXVK_LOG_LEVEL=warn for the Studio container), a monitor thread that logs
+  `[proc] started/ended` for every Wine/Linux process (1 s) and `[monitor]` free memory + RSS of the
+  biggest processes (5 s), Android `onTrimMemory` warnings, `[app] Wine session ended (exit status)`,
+  Roblox crash dumps under `logs/` (exception code, address → module+offset), Roblox Studio logs →
+  `Download/RobloxStudioMobile-report.txt`.
 - X server fixes (Winlator bugs Studio triggers):
   - `XInputExtension`: XInput 1 `ListInputDevices` implemented (was BadImplementation → Xlib killed
     the Wine desktop process; Qt's tablet probe triggers it).
@@ -89,9 +95,16 @@ tests/drawable/run.sh                       # if X server drawing code changed
 | studio6 | login callback via batch file | BufferOverflowException in WinHandler.exec |
 | studio7 | CopyArea source clipping | SEGV_ACCERR reading past a source buffer |
 | studio8 | GPU child windows as overlays | top bar (1280×29 D3D window) stretched over the whole Studio window, flickering with the start page |
+| studio9 | diagnostics only (no behaviour change) | opening a place ended the session with no error anywhere (see below) |
 
-State at studio7: Studio starts, browser login works (user signed in), plugins load; the main window
-was garbled by the stretching bug fixed in studio8 (not yet confirmed on the device).
+State at studio8: Studio starts, browser login works, the start page draws correctly, and a place
+(95206881) opens: the DataModel loads, then Studio's log stops right after "Restoring Layout - Restoring
+Default View" and the session ends ~16 s later. No Wine error, no app crash, Android recorded the app's
+own exit (signal 9 = `killProcess` after Wine ended), Wine saw ~2.3 GB available RAM. Candidates: a
+Studio crash caught by Roblox's crash handler (dump under `logs/`), Studio killed for memory, or a GPU
+error when the 3D viewport first renders. studio9's report tells these apart: `[proc] ended:
+RobloxStudioBeta.exe` + a decoded dump = crash; no dump + falling `avail=` / `onTrimMemory` = memory
+kill; DXVK `err:` lines (e.g. `VK_ERROR_DEVICE_LOST`) = GPU.
 
 ## Testing without the phone
 
