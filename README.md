@@ -12,8 +12,8 @@ Wine, Box64, DXVK and the Turnip/Vortek Vulkan drivers into an Android app.
 ## Download & install
 
 - APK: [`apk/RobloxStudioMobile.apk`](apk/RobloxStudioMobile.apk) (≈156 MB, stored with Git LFS —
-  use GitHub's "Download raw file" button). Version `11.2-studio4`, arm64-v8a only.
-- SHA-256: `2e8bbee159e8f9e0ab491c8c6db953bd2832ecb427bb9ef35b4d617bc8fb1d2d`
+  use GitHub's "Download raw file" button). Version `11.2-studio5`, arm64-v8a only.
+- SHA-256: `ee828580b12cfca8f6a00bb7f491778fa151e773126b3ace87e1c990d90a9b27`
 - Signing certificate SHA-256: `f7e1905ea92f6341e4d585f5514f7d0a17e36a2c18e5425e5f5cb0617e4c1e69`
   (personal key; the keystore and its password are not in this repo).
 
@@ -95,6 +95,14 @@ emulator; it needs a real ARM64 phone.
 - `XInputExtension` (Winlator's X server) — implements XInput 1 `ListInputDevices` (replies "no devices").
   It used to answer BadImplementation, which makes Xlib terminate the Wine process that asked; Studio's
   Qt tablet probe triggered it and took down Wine's desktop process, ending the session.
+- `Drawable` / MIT-SHM / DRI3 (Winlator's X server) — fixes the SIGSEGV (SEGV_ACCERR) in
+  `Drawable.copyArea` seen on a Galaxy S25 Ultra: a window could keep pointing at a client's
+  **read-only** shared-memory image, and the next draw into it wrote to read-only memory. Drawables
+  now switch to a writable copy before any write (copy-on-write), are moved off a segment before
+  it is unmapped, SHM mappings are reference-counted, `drawImage` clips to both buffers, the GPU
+  buffer stride is only used while pixels are in that buffer, and a failed `AHardwareBuffer_lock`
+  no longer yields a garbage pointer. `tests/drawable/run.sh` reproduces the crash scenario on the
+  host with Winlator's real native code and checks the fix.
 - `AppUtils.restartApplication` — ends the process with `killProcess` instead of `Runtime.exit`, which
   could SIGSEGV while the X server/audio/renderer threads were still running.
 - `RootFSInstaller` — completion callback; `AndroidManifest` — new launcher + `roblox-studio-auth`

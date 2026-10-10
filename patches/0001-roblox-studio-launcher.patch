@@ -13,7 +13,7 @@ index f7415cf..ba0375d 100644
 +*.jks
 +*.keystore
 diff --git a/app/build.gradle b/app/build.gradle
-index 7690275..dc60fea 100644
+index 7690275..a5c599f 100644
 --- a/app/build.gradle
 +++ b/app/build.gradle
 @@ -1,5 +1,11 @@
@@ -34,8 +34,8 @@ index 7690275..dc60fea 100644
          targetSdkVersion 28
 -        versionCode 33
 -        versionName "11.2"
-+        versionCode 36
-+        versionName "11.2-studio4"
++        versionCode 37
++        versionName "11.2-studio5"
 +    }
 +
 +    signingConfigs {
@@ -98,6 +98,22 @@ index 1262c0d..facd829 100644
          <activity android:name="com.winlator.XServerDisplayActivity"
              android:exported="false"
              android:theme="@style/AppThemeFullscreenDark"
+diff --git a/app/src/main/cpp/winlator/src/gpu_image.c b/app/src/main/cpp/winlator/src/gpu_image.c
+index b197cea..83c5117 100644
+--- a/app/src/main/cpp/winlator/src/gpu_image.c
++++ b/app/src/main/cpp/winlator/src/gpu_image.c
+@@ -104,8 +104,9 @@ JNIEXPORT jobject JNICALL
+ Java_com_winlator_renderer_GPUImage_lockHardwareBuffer(JNIEnv *env, jclass obj,
+                                                        jlong hardwareBufferPtr) {
+     AHardwareBuffer* hardwareBuffer = (AHardwareBuffer*)hardwareBufferPtr;
+-    void *virtualAddr;
+-    AHardwareBuffer_lock(hardwareBuffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL, &virtualAddr);
++    void *virtualAddr = NULL;
++    // A failed lock leaves virtualAddr undefined: never hand that to Java as a buffer.
++    if (AHardwareBuffer_lock(hardwareBuffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL, &virtualAddr) != 0 || !virtualAddr) return NULL;
+ 
+     AHardwareBuffer_Desc buffDesc = {0};
+     AHardwareBuffer_describe(hardwareBuffer, &buffDesc);
 diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
 index 667f1b3..839d55e 100644
 --- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
@@ -240,6 +256,19 @@ index b503fc0..3906563 100644
 +        }
      }
  }
+diff --git a/app/src/main/java/com/winlator/renderer/GPUImage.java b/app/src/main/java/com/winlator/renderer/GPUImage.java
+index 048f888..58f2da9 100644
+--- a/app/src/main/java/com/winlator/renderer/GPUImage.java
++++ b/app/src/main/java/com/winlator/renderer/GPUImage.java
+@@ -32,7 +32,7 @@ public class GPUImage extends Texture {
+         hardwareBufferPtr = createHardwareBuffer(owner.width, owner.height, cpuAccess, useHALPixelFormatBGRA8888);
+         if (cpuAccess && hardwareBufferPtr != 0) {
+             virtualData = lockHardwareBuffer(hardwareBufferPtr);
+-            locked = true;
++            locked = virtualData != null;
+         }
+     }
+ 
 diff --git a/app/src/main/java/com/winlator/studio/Diagnostics.java b/app/src/main/java/com/winlator/studio/Diagnostics.java
 new file mode 100644
 index 0000000..bdf09b0
@@ -1594,6 +1623,39 @@ index 0000000..f609d87
 +        }
 +    }
 +}
+diff --git a/app/src/main/java/com/winlator/sysvshm/SysVSharedMemory.java b/app/src/main/java/com/winlator/sysvshm/SysVSharedMemory.java
+index 8295591..1092554 100644
+--- a/app/src/main/java/com/winlator/sysvshm/SysVSharedMemory.java
++++ b/app/src/main/java/com/winlator/sysvshm/SysVSharedMemory.java
+@@ -18,6 +18,7 @@ public class SysVSharedMemory {
+         private int fd;
+         private long size;
+         private ByteBuffer data;
++        private int attachCount;
+     }
+ 
+     public int getFd(int shmid) {
+@@ -66,6 +67,7 @@ public class SysVSharedMemory {
+             SHMemory shmemory = shmemories.get(shmid);
+             if (shmemory != null) {
+                 if (shmemory.data == null) shmemory.data = mapSHMSegment(shmemory.fd, shmemory.size, 0, true);
++                if (shmemory.data != null) shmemory.attachCount++;
+                 return shmemory.data;
+             }
+             else return null;
+@@ -77,9 +79,11 @@ public class SysVSharedMemory {
+             for (int i = 0; i < shmemories.size(); i++) {
+                 SHMemory shmemory = shmemories.valueAt(i);
+                 if (shmemory.data == data) {
+-                    if (shmemory.data != null) {
++                    // One mapping is shared by every attach of the segment: unmap after the last detach.
++                    if (shmemory.data != null && --shmemory.attachCount <= 0) {
+                         unmapSHMSegment(shmemory.data, shmemory.size);
+                         shmemory.data = null;
++                        shmemory.attachCount = 0;
+                     }
+                     break;
+                 }
 diff --git a/app/src/main/java/com/winlator/winhandler/WinHandler.java b/app/src/main/java/com/winlator/winhandler/WinHandler.java
 index 3318b9f..b04c42c 100644
 --- a/app/src/main/java/com/winlator/winhandler/WinHandler.java
@@ -1656,6 +1718,242 @@ index 08fbf80..a2dc088 100644
      }
  
      private static void clearOptDir(File optDir) {
+diff --git a/app/src/main/java/com/winlator/xserver/Drawable.java b/app/src/main/java/com/winlator/xserver/Drawable.java
+index 2680054..8255089 100644
+--- a/app/src/main/java/com/winlator/xserver/Drawable.java
++++ b/app/src/main/java/com/winlator/xserver/Drawable.java
+@@ -18,6 +18,8 @@ public class Drawable extends XResource {
+     public final Visual visual;
+     private Texture texture = new Texture(this);
+     private ByteBuffer data;
++    private ByteBuffer ownData;
++    private boolean dataReadOnly = false;
+     private boolean useSharedData;
+     private Runnable onDrawListener;
+     private boolean offscreenStorage = false;
+@@ -34,6 +36,7 @@ public class Drawable extends XResource {
+         this.height = (short)height;
+         this.visual = visual;
+         this.data = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.LITTLE_ENDIAN);
++        this.ownData = this.data;
+     }
+ 
+     public static Drawable fromBitmap(Bitmap bitmap) {
+@@ -55,7 +58,10 @@ public class Drawable extends XResource {
+     }
+ 
+     public void setTexture(Texture texture) {
+-        if (texture instanceof GPUImage) data = ((GPUImage)texture).getVirtualData();
++        if (texture instanceof GPUImage) {
++            data = ((GPUImage)texture).getVirtualData();
++            dataReadOnly = false;
++        }
+         this.texture = texture;
+     }
+ 
+@@ -65,11 +71,54 @@ public class Drawable extends XResource {
+     }
+ 
+     public void setData(ByteBuffer data) {
++        setData(data, false);
++    }
++
++    /** readOnly: the buffer is a read-only mapping shared with a client (MIT-SHM image, DRI3 pixmap). */
++    public void setData(ByteBuffer data, boolean readOnly) {
+         this.data = data;
++        this.dataReadOnly = data != null && readOnly;
++    }
++
++    /**
++     * Before drawing into this drawable: if its pixels currently live in a read-only client buffer,
++     * move them into a writable buffer first. Writing into the read-only mapping crashes the whole
++     * app (SIGSEGV, SEGV_ACCERR), and the client may unmap it at any time.
++     */
++    public void ensureWritable() {
++        if (!dataReadOnly) return;
++        synchronized (renderLock) {
++            if (!dataReadOnly) return;
++            ByteBuffer source = data;
++            ByteBuffer target = texture instanceof GPUImage ? ((GPUImage)texture).getVirtualData() : null;
++            if (target == null) {
++                if (ownData == null) ownData = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.LITTLE_ENDIAN);
++                target = ownData;
++            }
++            data = target;
++            dataReadOnly = false;
++
++            short stride = getStride();
++            int rows = Math.min(height, Math.min(rowsAvailable(source, width, 0, 0, width), rowsAvailable(target, stride, 0, 0, width)));
++            if (rows > 0) copyArea((short)0, (short)0, (short)0, (short)0, width, (short)rows, width, stride, source, target);
++            if (source != null) source.rewind();
++            target.rewind();
++        }
++    }
++
++    /** Rows of `width` pixels starting at (x, y) that fit in a buffer with the given stride (in pixels). */
++    private static int rowsAvailable(ByteBuffer buffer, int stride, int x, int y, int width) {
++        if (buffer == null || stride <= 0 || width <= 0 || x < 0 || y < 0 || x + width > stride) return 0;
++        long pixels = buffer.capacity() / 4;
++        long firstRowStart = (long)y * stride + x;
++        if (firstRowStart + width > pixels) return 0;
++        return (int)Math.min(Short.MAX_VALUE, (pixels - firstRowStart - width) / stride + 1);
+     }
+ 
+     private short getStride() {
+-        return texture instanceof GPUImage ? ((GPUImage)texture).getStride() : width;
++        // The GPU buffer's stride only applies while the pixels are actually in that buffer.
++        if (texture instanceof GPUImage && data != null && data == ((GPUImage)texture).getVirtualData()) return ((GPUImage)texture).getStride();
++        return width;
+     }
+ 
+     public Runnable getOnDrawListener() {
+@@ -89,18 +138,27 @@ public class Drawable extends XResource {
+     }
+ 
+     public void drawImage(short srcX, short srcY, short dstX, short dstY, short width, short height, byte depth, ByteBuffer data, short totalWidth, short totalHeight) {
+-        if (this.data == null) return;
++        ensureWritable();
++        if (this.data == null || data == null) return;
+ 
+         if (depth == 1) {
+             drawBitmap(width, height, data, this.data);
+         }
+         else if (depth == 24 || depth == 32) {
+-            dstX = (short)Mathf.clamp(dstX, 0, this.width-1);
+-            dstY = (short)Mathf.clamp(dstY, 0, this.height-1);
+-            if ((dstX + width) > this.width) width = (short)((this.width - dstX));
+-            if ((dstY + height) > this.height) height = (short)((this.height - dstY));
+-
+-            copyArea(srcX, srcY, dstX, dstY, width, height, totalWidth, this.getStride(), data, this.data);
++            // Clip to the destination (moving the source along), then to the source image and to
++            // both buffers, so no request can make the copy read or write out of bounds.
++            int sx = srcX, sy = srcY, dx = dstX, dy = dstY, w = width, h = height;
++            if (dx < 0) { sx -= dx; w += dx; dx = 0; }
++            if (dy < 0) { sy -= dy; h += dy; dy = 0; }
++            if (sx < 0) { dx -= sx; w += sx; sx = 0; }
++            if (sy < 0) { dy -= sy; h += sy; sy = 0; }
++            w = Math.min(w, Math.min(this.width - dx, totalWidth - sx));
++            h = Math.min(h, this.height - dy);
++            if (totalHeight > 0) h = Math.min(h, totalHeight - sy);
++
++            short dstStride = this.getStride();
++            h = Math.min(h, Math.min(rowsAvailable(data, totalWidth, sx, sy, w), rowsAvailable(this.data, dstStride, dx, dy, w)));
++            if (w > 0 && h > 0) copyArea((short)sx, (short)sy, (short)dx, (short)dy, (short)w, (short)h, totalWidth, dstStride, data, this.data);
+         }
+ 
+         this.data.rewind();
+@@ -130,6 +188,7 @@ public class Drawable extends XResource {
+     }
+ 
+     public void copyArea(short srcX, short srcY, short dstX, short dstY, short width, short height, Drawable drawable, GraphicsContext.Function gcFunction) {
++        ensureWritable();
+         if (this.data == null || drawable.data == null) return;
+ 
+         dstX = (short)Mathf.clamp(dstX, 0, this.width-1);
+@@ -153,6 +212,7 @@ public class Drawable extends XResource {
+     }
+ 
+     public void fillRect(int x, int y, int width, int height, int color) {
++        ensureWritable();
+         if (this.data == null) return;
+         x = (short)Mathf.clamp(x, 0, this.width-1);
+         y = (short)Mathf.clamp(y, 0, this.height-1);
+@@ -171,6 +231,7 @@ public class Drawable extends XResource {
+     }
+ 
+     public void drawLine(int x0, int y0, int x1, int y1, int color, int lineWidth) {
++        ensureWritable();
+         if (this.data == null) return;
+         x0 = Mathf.clamp(x0, 0, width-lineWidth);
+         y0 = Mathf.clamp(y0, 0, height-lineWidth);
+@@ -184,6 +245,7 @@ public class Drawable extends XResource {
+     }
+ 
+     public void drawAlphaMaskedBitmap(byte foreRed, byte foreGreen, byte foreBlue, byte backRed, byte backGreen, byte backBlue, Drawable srcDrawable, Drawable maskDrawable) {
++        ensureWritable();
+         if (this.data == null || srcDrawable.data == null || maskDrawable.data == null) return;
+         drawAlphaMaskedBitmap(foreRed, foreGreen, foreBlue, backRed, backGreen, backBlue, srcDrawable.data, maskDrawable.data, this.data);
+         this.data.rewind();
+diff --git a/app/src/main/java/com/winlator/xserver/SHMSegmentManager.java b/app/src/main/java/com/winlator/xserver/SHMSegmentManager.java
+index cbd5d51..719dbfe 100644
+--- a/app/src/main/java/com/winlator/xserver/SHMSegmentManager.java
++++ b/app/src/main/java/com/winlator/xserver/SHMSegmentManager.java
+@@ -5,10 +5,15 @@ import android.util.SparseArray;
+ import com.winlator.sysvshm.SysVSharedMemory;
+ 
+ import java.nio.ByteBuffer;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.Set;
++import java.util.WeakHashMap;
+ 
+ public class SHMSegmentManager {
+     private final SysVSharedMemory sysVSharedMemory;
+     private final SparseArray<ByteBuffer> shmSegments = new SparseArray<>();
++    private final SparseArray<Set<Drawable>> borrowers = new SparseArray<>();
+ 
+     public SHMSegmentManager(SysVSharedMemory sysVSharedMemory) {
+         this.sysVSharedMemory = sysVSharedMemory;
+@@ -23,11 +28,29 @@ public class SHMSegmentManager {
+     public void detach(int xid) {
+         ByteBuffer data = shmSegments.get(xid);
+         if (data != null) {
++            // Drawables still showing this segment get their own copy before it is unmapped.
++            Set<Drawable> drawables = borrowers.get(xid);
++            if (drawables != null) {
++                for (Drawable drawable : new ArrayList<>(drawables)) {
++                    if (drawable.getData() == data) drawable.ensureWritable();
++                }
++                borrowers.remove(xid);
++            }
+             sysVSharedMemory.detach(data);
+             shmSegments.remove(xid);
+         }
+     }
+ 
++    /** Records that the drawable displays this segment's memory directly (MIT-SHM shared pixmap path). */
++    public void addBorrower(int xid, Drawable drawable) {
++        Set<Drawable> drawables = borrowers.get(xid);
++        if (drawables == null) {
++            drawables = Collections.newSetFromMap(new WeakHashMap<>());
++            borrowers.put(xid, drawables);
++        }
++        drawables.add(drawable);
++    }
++
+     public ByteBuffer getData(int xid) {
+         return shmSegments.get(xid);
+     }
+diff --git a/app/src/main/java/com/winlator/xserver/extensions/DRI3Extension.java b/app/src/main/java/com/winlator/xserver/extensions/DRI3Extension.java
+index 30de101..6ade32d 100644
+--- a/app/src/main/java/com/winlator/xserver/extensions/DRI3Extension.java
++++ b/app/src/main/java/com/winlator/xserver/extensions/DRI3Extension.java
+@@ -165,7 +165,7 @@ public class DRI3Extension extends Extension {
+ 
+             short totalWidth = (short)(stride / 4);
+             Drawable drawable = xServer.drawableManager.createDrawable(pixmapId, totalWidth, height, depth);
+-            drawable.setData(buffer);
++            drawable.setData(buffer, true);
+             drawable.setTexture(null);
+             drawable.setOnDestroyListener(onDestroyDrawableListener);
+             xServer.pixmapManager.createPixmap(drawable);
+diff --git a/app/src/main/java/com/winlator/xserver/extensions/MITSHMExtension.java b/app/src/main/java/com/winlator/xserver/extensions/MITSHMExtension.java
+index 45617d2..3d4d5ec 100644
+--- a/app/src/main/java/com/winlator/xserver/extensions/MITSHMExtension.java
++++ b/app/src/main/java/com/winlator/xserver/extensions/MITSHMExtension.java
+@@ -106,7 +106,11 @@ public class MITSHMExtension extends Extension {
+ 
+         if (drawable.isUseSharedData()) {
+             synchronized (drawable.renderLock) {
+-                if (drawable.getData() != data) drawable.setData(data);
++                if (drawable.getData() != data) {
++                    // The window now shows the client's (read-only) image directly.
++                    drawable.setData(data, true);
++                    xServer.getSHMSegmentManager().addBorrower(shmseg, drawable);
++                }
+                 drawable.forceUpdate();
+             }
+         }
 diff --git a/app/src/main/java/com/winlator/xserver/extensions/XInputExtension.java b/app/src/main/java/com/winlator/xserver/extensions/XInputExtension.java
 index 264c688..1c0d8bf 100644
 --- a/app/src/main/java/com/winlator/xserver/extensions/XInputExtension.java
