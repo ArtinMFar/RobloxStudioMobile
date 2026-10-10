@@ -13,7 +13,7 @@ index f7415cf..ba0375d 100644
 +*.jks
 +*.keystore
 diff --git a/app/build.gradle b/app/build.gradle
-index 7690275..3982b52 100644
+index 7690275..dc60fea 100644
 --- a/app/build.gradle
 +++ b/app/build.gradle
 @@ -1,5 +1,11 @@
@@ -34,8 +34,8 @@ index 7690275..3982b52 100644
          targetSdkVersion 28
 -        versionCode 33
 -        versionName "11.2"
-+        versionCode 35
-+        versionName "11.2-studio3"
++        versionCode 36
++        versionName "11.2-studio4"
 +    }
 +
 +    signingConfigs {
@@ -186,6 +186,21 @@ index 667f1b3..839d55e 100644
          }
  
          if (execPath != null) {
+diff --git a/app/src/main/java/com/winlator/core/AppUtils.java b/app/src/main/java/com/winlator/core/AppUtils.java
+index cac686e..ff773e6 100644
+--- a/app/src/main/java/com/winlator/core/AppUtils.java
++++ b/app/src/main/java/com/winlator/core/AppUtils.java
+@@ -79,7 +79,9 @@ public abstract class AppUtils {
+         }
+ 
+         context.startActivity(mainIntent);
+-        Runtime.getRuntime().exit(0);
++        // Kill instead of Runtime.exit(): exit() runs native destructors while the X server, audio and
++        // renderer threads are still running, which can crash (SIGSEGV) on the way out.
++        android.os.Process.killProcess(android.os.Process.myPid());
+     }
+ 
+     public static void showKeyboard(AppCompatActivity activity) {
 diff --git a/app/src/main/java/com/winlator/core/FileUtils.java b/app/src/main/java/com/winlator/core/FileUtils.java
 index b503fc0..3906563 100644
 --- a/app/src/main/java/com/winlator/core/FileUtils.java
@@ -227,10 +242,10 @@ index b503fc0..3906563 100644
  }
 diff --git a/app/src/main/java/com/winlator/studio/Diagnostics.java b/app/src/main/java/com/winlator/studio/Diagnostics.java
 new file mode 100644
-index 0000000..9ccefd4
+index 0000000..bdf09b0
 --- /dev/null
 +++ b/app/src/main/java/com/winlator/studio/Diagnostics.java
-@@ -0,0 +1,328 @@
+@@ -0,0 +1,365 @@
 +package com.winlator.studio;
 +
 +import android.app.ActivityManager;
@@ -320,9 +335,11 @@ index 0000000..9ccefd4
 +        }
 +
 +        final long[] written = {0};
++        final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS ", Locale.ENGLISH);
 +        return (line) -> {
 +            if (written[0] > MAX_SESSION_LOG_BYTES) return;
 +            try {
++                writer.write(timeFormat.format(new Date()));
 +                writer.write(line);
 +                writer.write('\n');
 +                // Flush every line: if the app dies natively, nothing buffered would survive.
@@ -339,9 +356,9 @@ index 0000000..9ccefd4
 +        long lastSeen = PreferenceManager.getDefaultSharedPreferences(context).getLong(PREF_LAST_SEEN_EXIT, 0);
 +        for (ApplicationExitInfo info : getExitInfos(context, 5)) {
 +            if (info.getTimestamp() <= lastSeen) break;
-+            if (isAbnormal(info.getReason())) {
++            if (isAbnormal(info)) {
 +                String description = info.getDescription() != null ? ": "+info.getDescription() : "";
-+                return reasonName(info.getReason())+description;
++                return describe(info)+description;
 +            }
 +        }
 +        return null;
@@ -349,7 +366,7 @@ index 0000000..9ccefd4
 +
 +    public static void acknowledgeExits(Context context) {
 +        SharedPreferences.Editor editor = PreferenceManager.getDefaultSharedPreferences(context).edit();
-+        editor.putLong(PREF_LAST_SEEN_EXIT, System.currentTimeMillis()).apply();
++        editor.putLong(PREF_LAST_SEEN_EXIT, System.currentTimeMillis()).commit();
 +    }
 +
 +    public static String buildReport(Context context, Container container) {
@@ -393,7 +410,7 @@ index 0000000..9ccefd4
 +            List<ApplicationExitInfo> infos = getExitInfos(context, 6);
 +            if (infos.isEmpty()) sb.append("none recorded\n");
 +            for (ApplicationExitInfo info : infos) {
-+                sb.append(timestamp(info.getTimestamp())).append("  ").append(reasonName(info.getReason()))
++                sb.append(timestamp(info.getTimestamp())).append("  ").append(describe(info))
 +                  .append("  status=").append(info.getStatus())
 +                  .append("  importance=").append(info.getImportance())
 +                  .append(String.format(Locale.ENGLISH, "  pss=%dMB rss=%dMB", info.getPss() / 1024, info.getRss() / 1024));
@@ -401,9 +418,9 @@ index 0000000..9ccefd4
 +                sb.append("\n");
 +            }
 +            for (ApplicationExitInfo info : infos) {
-+                if (!isAbnormal(info.getReason())) continue;
++                if (!isAbnormal(info)) continue;
 +                String trace = readTrace(info);
-+                if (trace != null) sb.append("\n-- Trace of the last abnormal exit (").append(reasonName(info.getReason())).append(") --\n").append(trace).append("\n");
++                if (trace != null) sb.append("\n-- Trace of the last abnormal exit (").append(describe(info)).append(") --\n").append(trace).append("\n");
 +                break;
 +            }
 +        }
@@ -422,6 +439,9 @@ index 0000000..9ccefd4
 +            sb.append("\n== Roblox Studio logs (").append(logs != null ? logs.length : 0).append(" files) ==\n");
 +            if (logs != null) {
 +                Arrays.sort(logs, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
++                if (logs.length > 0) {
++                    sb.append("\n-- Errors in ").append(logs[0].getName()).append(" --\n").append(grep(logs[0], "Error|Critical|crash|Crash|Exception|fail", 80));
++                }
 +                for (int i = 0; i < Math.min(3, logs.length); i++) {
 +                    sb.append("\n-- ").append(logs[i].getName()).append(" (").append(timestamp(logs[i].lastModified())).append(") --\n");
 +                    sb.append(tail(logs[i], 150));
@@ -470,8 +490,17 @@ index 0000000..9ccefd4
 +        return javaCrash.isFile() && javaCrash.lastModified() > lastSeen ? "Java crash" : null;
 +    }
 +
-+    private static boolean isAbnormal(int reason) {
-+        switch (reason) {
++    private static boolean isSelfRestart(ApplicationExitInfo info) {
++        return info.getReason() == ApplicationExitInfo.REASON_SIGNALED && info.getStatus() == 9;
++    }
++
++    private static String describe(ApplicationExitInfo info) {
++        return isSelfRestart(info) ? "closed by the app (session ended)" : reasonName(info.getReason());
++    }
++
++    private static boolean isAbnormal(ApplicationExitInfo info) {
++        if (isSelfRestart(info)) return false;
++        switch (info.getReason()) {
 +            case ApplicationExitInfo.REASON_CRASH:
 +            case ApplicationExitInfo.REASON_CRASH_NATIVE:
 +            case ApplicationExitInfo.REASON_ANR:
@@ -514,6 +543,10 @@ index 0000000..9ccefd4
 +            int read;
 +            while ((read = in.read(buffer)) != -1 && out.size() < (1 << 20)) out.write(buffer, 0, read);
 +            byte[] data = out.toByteArray();
++            if (info.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE) {
++                String decoded = TombstoneDecoder.decode(data);
++                if (decoded != null) return decoded;
++            }
 +
 +            StringBuilder sb = new StringBuilder();
 +            StringBuilder run = new StringBuilder();
@@ -526,7 +559,7 @@ index 0000000..9ccefd4
 +                if (b == '\n' && info.getReason() == ApplicationExitInfo.REASON_ANR) run.append(' ');
 +                if (run.length() >= 5) {
 +                    sb.append(run).append('\n');
-+                    if (++lines >= 200) break;
++                    if (++lines >= 600) break;
 +                }
 +                run.setLength(0);
 +            }
@@ -535,6 +568,25 @@ index 0000000..9ccefd4
 +        catch (Exception e) {
 +            return "could not read trace: "+e;
 +        }
++    }
++
++    private static String grep(File file, String regex, int maxLines) {
++        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(regex);
++        StringBuilder sb = new StringBuilder();
++        int count = 0;
++        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(new java.io.FileInputStream(file), StandardCharsets.UTF_8))) {
++            String line;
++            while ((line = reader.readLine()) != null && count < maxLines) {
++                if (pattern.matcher(line).find() && !line.contains("Redundant Flag ID")) {
++                    sb.append(line.length() > 300 ? line.substring(0, 300) : line).append('\n');
++                    count++;
++                }
++            }
++        }
++        catch (IOException e) {
++            sb.append("(could not read: ").append(e).append(")\n");
++        }
++        return count == 0 && sb.length() == 0 ? "(none)\n" : sb.toString();
 +    }
 +
 +    private static String tail(File file, int maxLines) {
@@ -1273,6 +1325,275 @@ index 0000000..c4f215d
 +        btReinstall.setVisibility(View.GONE);
 +    }
 +}
+diff --git a/app/src/main/java/com/winlator/studio/TombstoneDecoder.java b/app/src/main/java/com/winlator/studio/TombstoneDecoder.java
+new file mode 100644
+index 0000000..f609d87
+--- /dev/null
++++ b/app/src/main/java/com/winlator/studio/TombstoneDecoder.java
+@@ -0,0 +1,263 @@
++package com.winlator.studio;
++
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++
++/**
++ * Turns an Android native-crash tombstone (protobuf, as returned by
++ * ApplicationExitInfo.getTraceInputStream() on Android 12+) into readable text:
++ * signal and fault address, the crashing thread's backtrace and the last log lines.
++ * Field numbers follow system/core/debuggerd/proto/tombstone.proto.
++ */
++public final class TombstoneDecoder {
++    private static final int MAX_FRAMES = 64;
++    private static final int MAX_LOG_LINES = 120;
++
++    private static final class Frame {
++        long relPc;
++        String functionName = "";
++        long functionOffset;
++        String fileName = "";
++    }
++
++    private static final class ThreadInfo {
++        int id;
++        String name = "";
++        final List<Frame> frames = new ArrayList<>();
++    }
++
++    private TombstoneDecoder() {}
++
++    /** Returns readable text, or null if the data doesn't look like a tombstone. */
++    public static String decode(byte[] data) {
++        try {
++            return decodeOrThrow(data);
++        }
++        catch (RuntimeException e) {
++            return null;
++        }
++    }
++
++    private static String decodeOrThrow(byte[] data) {
++        Reader reader = new Reader(data, 0, data.length);
++        int tid = -1;
++        String signalName = "", codeName = "", abortMessage = "", timestamp = "";
++        int signalNumber = 0, signalCode = 0;
++        long faultAddress = 0;
++        boolean hasFaultAddress = false;
++        List<String> causes = new ArrayList<>();
++        List<String> commandLine = new ArrayList<>();
++        Map<Integer, ThreadInfo> threads = new LinkedHashMap<>();
++        List<String> logLines = new ArrayList<>();
++
++        while (reader.hasMore()) {
++            long key = reader.varint();
++            int field = (int)(key >>> 3), wireType = (int)(key & 7);
++            if (wireType == 2) {
++                int length = (int)reader.varint();
++                Reader sub = reader.sub(length);
++                switch (field) {
++                    case 4: timestamp = sub.string(); break;
++                    case 9: commandLine.add(sub.string()); break;
++                    case 10: {
++                        while (sub.hasMore()) {
++                            long k = sub.varint();
++                            int f = (int)(k >>> 3), w = (int)(k & 7);
++                            if (f == 1 && w == 0) signalNumber = (int)sub.varint();
++                            else if (f == 2 && w == 2) signalName = sub.sub((int)sub.varint()).string();
++                            else if (f == 3 && w == 0) signalCode = (int)sub.varint();
++                            else if (f == 4 && w == 2) codeName = sub.sub((int)sub.varint()).string();
++                            else if (f == 8 && w == 0) hasFaultAddress = sub.varint() != 0;
++                            else if (f == 9 && w == 0) faultAddress = sub.varint();
++                            else sub.skip(w);
++                        }
++                        break;
++                    }
++                    case 14: abortMessage = sub.string(); break;
++                    case 15: {
++                        while (sub.hasMore()) {
++                            long k = sub.varint();
++                            if ((k >>> 3) == 1 && (k & 7) == 2) causes.add(sub.sub((int)sub.varint()).string());
++                            else sub.skip((int)(k & 7));
++                        }
++                        break;
++                    }
++                    case 16: {
++                        ThreadInfo thread = parseThreadMapEntry(sub);
++                        if (thread != null) threads.put(thread.id, thread);
++                        break;
++                    }
++                    case 18: parseLogBuffer(sub, logLines); break;
++                    default: break;
++                }
++            }
++            else if (field == 6 && wireType == 0) tid = (int)reader.varint();
++            else reader.skip(wireType);
++        }
++
++        if (signalName.isEmpty() && threads.isEmpty()) return null;
++
++        StringBuilder sb = new StringBuilder();
++        if (!timestamp.isEmpty()) sb.append("Time: ").append(timestamp).append('\n');
++        if (!commandLine.isEmpty()) sb.append("Process: ").append(String.join(" ", commandLine)).append('\n');
++        sb.append(String.format(Locale.ENGLISH, "signal %d (%s), code %d (%s)", signalNumber, signalName, signalCode, codeName));
++        if (hasFaultAddress) sb.append(String.format(Locale.ENGLISH, ", fault addr 0x%x", faultAddress));
++        sb.append('\n');
++        if (!abortMessage.isEmpty()) sb.append("Abort message: ").append(abortMessage).append('\n');
++        for (String cause : causes) sb.append("Cause: ").append(cause).append('\n');
++
++        ThreadInfo crashed = threads.get(tid);
++        if (crashed != null) {
++            sb.append("\nCrashing thread: ").append(crashed.id).append(" \"").append(crashed.name).append("\"\n");
++            appendFrames(sb, crashed);
++        }
++        else sb.append("\nCrashing thread ").append(tid).append(" not found in tombstone\n");
++
++        sb.append("\nAll threads:");
++        for (ThreadInfo thread : threads.values()) sb.append(' ').append(thread.id).append(":\"").append(thread.name).append('"');
++        sb.append('\n');
++
++        // Threads of this app's native code are the most interesting besides the crashing one.
++        for (ThreadInfo thread : threads.values()) {
++            if (thread == crashed) continue;
++            boolean ours = false;
++            for (Frame frame : thread.frames) if (frame.fileName.contains("com.winlator")) ours = true;
++            if (!ours) continue;
++            sb.append("\nThread ").append(thread.id).append(" \"").append(thread.name).append("\"\n");
++            appendFrames(sb, thread);
++        }
++
++        if (!logLines.isEmpty()) {
++            sb.append("\nLast log lines:\n");
++            for (int i = Math.max(0, logLines.size() - MAX_LOG_LINES); i < logLines.size(); i++) sb.append(logLines.get(i)).append('\n');
++        }
++        return sb.toString();
++    }
++
++    private static void appendFrames(StringBuilder sb, ThreadInfo thread) {
++        for (int i = 0; i < Math.min(thread.frames.size(), MAX_FRAMES); i++) {
++            Frame frame = thread.frames.get(i);
++            sb.append(String.format(Locale.ENGLISH, "  #%02d pc %016x  %s", i, frame.relPc, frame.fileName));
++            if (!frame.functionName.isEmpty()) sb.append(" (").append(frame.functionName).append('+').append(frame.functionOffset).append(')');
++            sb.append('\n');
++        }
++    }
++
++    /** map<uint32, Thread> entry: key = 1, value = 2. */
++    private static ThreadInfo parseThreadMapEntry(Reader entry) {
++        ThreadInfo thread = null;
++        while (entry.hasMore()) {
++            long k = entry.varint();
++            if ((k >>> 3) == 2 && (k & 7) == 2) thread = parseThread(entry.sub((int)entry.varint()));
++            else entry.skip((int)(k & 7));
++        }
++        return thread;
++    }
++
++    private static ThreadInfo parseThread(Reader reader) {
++        ThreadInfo thread = new ThreadInfo();
++        while (reader.hasMore()) {
++            long k = reader.varint();
++            int f = (int)(k >>> 3), w = (int)(k & 7);
++            if (f == 1 && w == 0) thread.id = (int)reader.varint();
++            else if (f == 2 && w == 2) thread.name = reader.sub((int)reader.varint()).string();
++            else if (f == 4 && w == 2) thread.frames.add(parseFrame(reader.sub((int)reader.varint())));
++            else reader.skip(w);
++        }
++        return thread;
++    }
++
++    private static Frame parseFrame(Reader reader) {
++        Frame frame = new Frame();
++        while (reader.hasMore()) {
++            long k = reader.varint();
++            int f = (int)(k >>> 3), w = (int)(k & 7);
++            if (f == 1 && w == 0) frame.relPc = reader.varint();
++            else if (f == 4 && w == 2) frame.functionName = reader.sub((int)reader.varint()).string();
++            else if (f == 5 && w == 0) frame.functionOffset = reader.varint();
++            else if (f == 6 && w == 2) frame.fileName = reader.sub((int)reader.varint()).string();
++            else reader.skip(w);
++        }
++        return frame;
++    }
++
++    /** LogBuffer { name = 1; repeated LogMessage logs = 2 }, LogMessage { timestamp = 1; pid = 2; tid = 3; priority = 4; tag = 5; message = 6 } */
++    private static void parseLogBuffer(Reader reader, List<String> out) {
++        while (reader.hasMore()) {
++            long k = reader.varint();
++            if ((k >>> 3) == 2 && (k & 7) == 2) {
++                Reader msg = reader.sub((int)reader.varint());
++                String time = "", tag = "", message = "";
++                long tid = 0, priority = 0;
++                while (msg.hasMore()) {
++                    long mk = msg.varint();
++                    int f = (int)(mk >>> 3), w = (int)(mk & 7);
++                    if (f == 1 && w == 2) time = msg.sub((int)msg.varint()).string();
++                    else if (f == 3 && w == 0) tid = msg.varint();
++                    else if (f == 4 && w == 0) priority = msg.varint();
++                    else if (f == 5 && w == 2) tag = msg.sub((int)msg.varint()).string();
++                    else if (f == 6 && w == 2) message = msg.sub((int)msg.varint()).string();
++                    else msg.skip(w);
++                }
++                String level = priority >= 0 && priority < 8 ? String.valueOf("??VDIWEF".charAt((int)priority)) : "?";
++                out.add(time+" "+tid+" "+level+" "+tag+": "+message.trim());
++            }
++            else reader.skip((int)(k & 7));
++        }
++    }
++
++    private static final class Reader {
++        private final byte[] data;
++        private int pos;
++        private final int end;
++
++        Reader(byte[] data, int start, int end) {
++            this.data = data;
++            this.pos = start;
++            this.end = end;
++        }
++
++        boolean hasMore() {
++            return pos < end;
++        }
++
++        long varint() {
++            long result = 0;
++            for (int shift = 0; shift < 64; shift += 7) {
++                if (pos >= end) throw new IllegalStateException("truncated varint");
++                byte b = data[pos++];
++                result |= (long)(b & 0x7f) << shift;
++                if ((b & 0x80) == 0) return result;
++            }
++            throw new IllegalStateException("bad varint");
++        }
++
++        Reader sub(int length) {
++            if (length < 0 || pos + length > end) throw new IllegalStateException("bad length");
++            Reader reader = new Reader(data, pos, pos + length);
++            pos += length;
++            return reader;
++        }
++
++        String string() {
++            String value = new String(data, pos, end - pos, StandardCharsets.UTF_8);
++            pos = end;
++            return value;
++        }
++
++        void skip(int wireType) {
++            switch (wireType) {
++                case 0: varint(); break;
++                case 1: pos += 8; break;
++                case 2: sub((int)varint()); break;
++                case 5: pos += 4; break;
++                default: throw new IllegalStateException("wire type "+wireType);
++            }
++            if (pos > end) throw new IllegalStateException("truncated");
++        }
++    }
++}
 diff --git a/app/src/main/java/com/winlator/winhandler/WinHandler.java b/app/src/main/java/com/winlator/winhandler/WinHandler.java
 index 3318b9f..b04c42c 100644
 --- a/app/src/main/java/com/winlator/winhandler/WinHandler.java
@@ -1335,6 +1656,53 @@ index 08fbf80..a2dc088 100644
      }
  
      private static void clearOptDir(File optDir) {
+diff --git a/app/src/main/java/com/winlator/xserver/extensions/XInputExtension.java b/app/src/main/java/com/winlator/xserver/extensions/XInputExtension.java
+index 264c688..1c0d8bf 100644
+--- a/app/src/main/java/com/winlator/xserver/extensions/XInputExtension.java
++++ b/app/src/main/java/com/winlator/xserver/extensions/XInputExtension.java
+@@ -46,6 +46,7 @@ public class XInputExtension extends Extension implements XResourceManager.OnRes
+ 
+     private static abstract class ClientOpcodes {
+         private static final byte GET_EXTENSION_VERSION = 1;
++        private static final byte LIST_INPUT_DEVICES = 2;
+         private static final byte GET_CLIENT_POINTER = 45;
+         private static final byte SELECT_EVENTS = 46;
+         private static final byte QUERY_VERSION = 47;
+@@ -84,6 +85,24 @@ public class XInputExtension extends Extension implements XResourceManager.OnRes
+         }
+     }
+ 
++    /**
++     * XInput 1 ListInputDevices: report no devices. Wine's tablet (wintab) support calls this when
++     * an app such as Roblox Studio (Qt) probes for pen tablets; a BadImplementation error here makes
++     * Xlib terminate the calling Wine process.
++     */
++    private void listInputDevices(XClient client, XInputStream inputStream, XOutputStream outputStream) throws IOException, XRequestError {
++        client.skipRequest();
++
++        try (XStreamLock lock = outputStream.lock()) {
++            outputStream.writeByte(RESPONSE_CODE_SUCCESS);
++            outputStream.writeByte(ClientOpcodes.LIST_INPUT_DEVICES);
++            outputStream.writeShort(client.getSequenceNumber());
++            outputStream.writeInt(0);
++            outputStream.writeByte((byte)0);
++            outputStream.writePad(23);
++        }
++    }
++
+     private void getClientPointer(XClient client, XInputStream inputStream, XOutputStream outputStream) throws IOException, XRequestError {
+         inputStream.skip(4);
+ 
+@@ -214,6 +233,9 @@ public class XInputExtension extends Extension implements XResourceManager.OnRes
+             case ClientOpcodes.GET_EXTENSION_VERSION:
+                 getExtensionVersion(client, inputStream, outputStream);
+                 break;
++            case ClientOpcodes.LIST_INPUT_DEVICES:
++                listInputDevices(client, inputStream, outputStream);
++                break;
+             case ClientOpcodes.GET_CLIENT_POINTER:
+                 getClientPointer(client, inputStream, outputStream);
+                 break;
 diff --git a/app/src/main/res/layout/studio_launcher_activity.xml b/app/src/main/res/layout/studio_launcher_activity.xml
 new file mode 100644
 index 0000000..51f7d5b

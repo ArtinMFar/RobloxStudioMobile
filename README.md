@@ -12,8 +12,8 @@ Wine, Box64, DXVK and the Turnip/Vortek Vulkan drivers into an Android app.
 ## Download & install
 
 - APK: [`apk/RobloxStudioMobile.apk`](apk/RobloxStudioMobile.apk) (≈156 MB, stored with Git LFS —
-  use GitHub's "Download raw file" button). Version `11.2-studio3`, arm64-v8a only.
-- SHA-256: `aee4211ac7021b09839f870806643e627c2e84f6cd32f70d191fb0054a2cacd6`
+  use GitHub's "Download raw file" button). Version `11.2-studio4`, arm64-v8a only.
+- SHA-256: `2e8bbee159e8f9e0ab491c8c6db953bd2832ecb427bb9ef35b4d617bc8fb1d2d`
 - Signing certificate SHA-256: `f7e1905ea92f6341e4d585f5514f7d0a17e36a2c18e5425e5f5cb0617e4c1e69`
   (personal key; the keystore and its password are not in this repo).
 
@@ -92,6 +92,11 @@ emulator; it needs a real ARM64 phone.
 - `studio/StudioInstaller` — Roblox CDN download, MD5 check, safe unzip, staged install.
 - `XServerDisplayActivity` — `exec_args` extra, "session running" flag, and `onNewIntent` that runs
   a program in the live session (used for the browser-login callback).
+- `XInputExtension` (Winlator's X server) — implements XInput 1 `ListInputDevices` (replies "no devices").
+  It used to answer BadImplementation, which makes Xlib terminate the Wine process that asked; Studio's
+  Qt tablet probe triggered it and took down Wine's desktop process, ending the session.
+- `AppUtils.restartApplication` — ends the process with `killProcess` instead of `Runtime.exit`, which
+  could SIGSEGV while the X server/audio/renderer threads were still running.
 - `RootFSInstaller` — completion callback; `AndroidManifest` — new launcher + `roblox-studio-auth`
   link handler; release signing config read from `keystore.properties`.
 
