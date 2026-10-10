@@ -13,7 +13,7 @@ index f7415cf..ba0375d 100644
 +*.jks
 +*.keystore
 diff --git a/app/build.gradle b/app/build.gradle
-index 7690275..a5c599f 100644
+index 7690275..31e0fdc 100644
 --- a/app/build.gradle
 +++ b/app/build.gradle
 @@ -1,5 +1,11 @@
@@ -34,8 +34,8 @@ index 7690275..a5c599f 100644
          targetSdkVersion 28
 -        versionCode 33
 -        versionName "11.2"
-+        versionCode 37
-+        versionName "11.2-studio5"
++        versionCode 38
++        versionName "11.2-studio6"
 +    }
 +
 +    signingConfigs {
@@ -640,6 +640,34 @@ index 0000000..bdf09b0
 +        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH).format(new Date(millis));
 +    }
 +}
+diff --git a/app/src/main/java/com/winlator/studio/StudioAuthCallback.java b/app/src/main/java/com/winlator/studio/StudioAuthCallback.java
+new file mode 100644
+index 0000000..305807e
+--- /dev/null
++++ b/app/src/main/java/com/winlator/studio/StudioAuthCallback.java
+@@ -0,0 +1,22 @@
++package com.winlator.studio;
++
++/**
++ * Hands a roblox-studio-auth: browser-login callback to the running Roblox Studio. Like on
++ * Windows, the callback is passed as an argument to RobloxStudioBeta.exe, which forwards it to
++ * the running instance. The callback is too long for one WinHandler exec request (256 bytes), so
++ * the command goes into a small batch file that is run with cmd.exe instead.
++ */
++public final class StudioAuthCallback {
++    public static final String BATCH_PATH = ".wine/drive_c/windows/temp/roblox-studio-auth.bat";
++    public static final String BATCH_DOS_PATH = "C:\\windows\\temp\\roblox-studio-auth.bat";
++    public static final String CMD_PATH = "C:\\windows\\system32\\cmd.exe";
++    public static final String CMD_ARGS = "/c "+BATCH_DOS_PATH;
++
++    private StudioAuthCallback() {}
++
++    public static String batchContent(String callbackUri) {
++        // Inside a batch file "%" must be doubled; "&", "?" and "=" are literal within the quotes.
++        String argument = callbackUri.replace("\"", "%22").replace("%", "%%");
++        return "@echo off\r\n\"C:\\Program Files\\Roblox Studio\\"+StudioInstaller.EXECUTABLE+"\" \""+argument+"\"\r\n";
++    }
++}
 diff --git a/app/src/main/java/com/winlator/studio/StudioInstaller.java b/app/src/main/java/com/winlator/studio/StudioInstaller.java
 new file mode 100644
 index 0000000..6ff120f
@@ -991,10 +1019,10 @@ index 0000000..6ff120f
 +}
 diff --git a/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java b/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java
 new file mode 100644
-index 0000000..c4f215d
+index 0000000..26c1c8c
 --- /dev/null
 +++ b/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,370 @@
 +package com.winlator.studio;
 +
 +import android.Manifest;
@@ -1019,6 +1047,7 @@ index 0000000..c4f215d
 +import com.winlator.container.ContainerManager;
 +import com.winlator.container.GraphicsDrivers;
 +import com.winlator.core.AppUtils;
++import com.winlator.core.FileUtils;
 +import com.winlator.xenvironment.RootFS;
 +import com.winlator.xenvironment.RootFSInstaller;
 +
@@ -1121,10 +1150,20 @@ index 0000000..c4f215d
 +    private void handleAuthCallback(String authUri) {
 +        String quoted = "\""+authUri.replace("\"", "%22")+"\"";
 +        if (XServerDisplayActivity.isSessionRunning()) {
-+            Intent intent = new Intent(this, XServerDisplayActivity.class);
-+            intent.putExtra("extra_exec_path", "C:\\Program Files\\Roblox Studio\\"+StudioInstaller.EXECUTABLE);
-+            intent.putExtra("extra_exec_args", quoted);
-+            startActivity(intent);
++            Container container = null;
++            for (Container candidate : new ContainerManager(this).getContainers()) {
++                if (StudioInstaller.isStudioContainer(candidate)) container = candidate;
++            }
++            File batch = container != null ? new File(container.getRootDir(), StudioAuthCallback.BATCH_PATH) : null;
++            if (batch != null) {
++                batch.getParentFile().mkdirs();
++                if (FileUtils.writeString(batch, StudioAuthCallback.batchContent(authUri))) {
++                    Intent intent = new Intent(this, XServerDisplayActivity.class);
++                    intent.putExtra("extra_exec_path", StudioAuthCallback.CMD_PATH);
++                    intent.putExtra("extra_exec_args", StudioAuthCallback.CMD_ARGS);
++                    startActivity(intent);
++                }
++            }
 +            finish();
 +        }
 +        else {
@@ -1657,7 +1696,7 @@ index 8295591..1092554 100644
                      break;
                  }
 diff --git a/app/src/main/java/com/winlator/winhandler/WinHandler.java b/app/src/main/java/com/winlator/winhandler/WinHandler.java
-index 3318b9f..b04c42c 100644
+index 3318b9f..38f7705 100644
 --- a/app/src/main/java/com/winlator/winhandler/WinHandler.java
 +++ b/app/src/main/java/com/winlator/winhandler/WinHandler.java
 @@ -1,5 +1,6 @@
@@ -1667,7 +1706,38 @@ index 3318b9f..b04c42c 100644
  import android.view.KeyEvent;
  import android.view.MotionEvent;
  
-@@ -445,7 +446,13 @@ public class WinHandler {
+@@ -77,6 +78,13 @@ public class WinHandler {
+ 
+     public void exec(final String filename, final String parameters) {
+         addAction(() -> {
++            byte[] fileBytes = filename.getBytes();
++            int length = 1 + 4 + fileBytes.length + 4 + (parameters != null ? parameters.getBytes().length : 0);
++            if (length > sendData.capacity()) {
++                // Doesn't fit in one request packet: refuse instead of overflowing the buffer.
++                Log.e("WinHandler", "exec request too long ("+length+" bytes): "+filename);
++                return;
++            }
+             sendData.rewind();
+             sendData.put(RequestCodes.EXEC);
+             byte[] filenameBytes = filename.getBytes();
+@@ -281,7 +289,15 @@ public class WinHandler {
+         Executors.newSingleThreadExecutor().execute(() -> {
+             while (running) {
+                 synchronized (actions) {
+-                    while (initReceived && !actions.isEmpty()) actions.poll().run();
++                    while (initReceived && !actions.isEmpty()) {
++                        try {
++                            actions.poll().run();
++                        }
++                        catch (RuntimeException e) {
++                            // A failing request must not crash the whole app.
++                            Log.e("WinHandler", "request failed", e);
++                        }
++                    }
+                     try {
+                         actions.wait();
+                     }
+@@ -445,7 +461,13 @@ public class WinHandler {
                      synchronized (actions) {
                          receiveData.rewind();
                          byte requestCode = receiveData.get();

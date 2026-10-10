@@ -12,8 +12,8 @@ Wine, Box64, DXVK and the Turnip/Vortek Vulkan drivers into an Android app.
 ## Download & install
 
 - APK: [`apk/RobloxStudioMobile.apk`](apk/RobloxStudioMobile.apk) (≈156 MB, stored with Git LFS —
-  use GitHub's "Download raw file" button). Version `11.2-studio5`, arm64-v8a only.
-- SHA-256: `ee828580b12cfca8f6a00bb7f491778fa151e773126b3ace87e1c990d90a9b27`
+  use GitHub's "Download raw file" button). Version `11.2-studio6`, arm64-v8a only.
+- SHA-256: `6512f21d1aff0513224cfe3e68f19351df8338e53aa4a8e05ec60f352282b7f0`
 - Signing certificate SHA-256: `f7e1905ea92f6341e4d585f5514f7d0a17e36a2c18e5425e5f5cb0617e4c1e69`
   (personal key; the keystore and its password are not in this repo).
 
@@ -41,7 +41,10 @@ Studio's built-in login window needs Microsoft WebView2, which is not installed 
 under Box64), so Studio shows **"Launch Failed … Login via Browser"**. Tap **Login via Browser**:
 the login page opens in your Android browser, and when roblox.com redirects to the
 `roblox-studio-auth:` link, Android hands it to this app, which passes it to the running Studio —
-the same way it works on Windows.
+the same way it works on Windows. The callback is too long for one WinHandler request (256 bytes),
+so the app writes the command into `C:\windows\temp\roblox-studio-auth.bat` and runs it with
+`cmd.exe /c`. `colab/stage5_auth.py` checks this with Wine's real `cmd.exe`: the argument arrives
+byte-for-byte, and a running Studio logs "Successfully received external login code".
 
 ## If something crashes
 
