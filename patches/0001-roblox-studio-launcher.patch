@@ -497,7 +497,7 @@ index 0000000..3caca66
 +}
 diff --git a/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java b/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java
 new file mode 100644
-index 0000000..19d47be
+index 0000000..3252851
 --- /dev/null
 +++ b/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java
 @@ -0,0 +1,318 @@
@@ -744,7 +744,7 @@ index 0000000..19d47be
 +
 +                    @Override
 +                    public void onProgress(int percent) {
-+                        runOnUiThread(() -> setProgress(percent));
++                        runOnUiThread(() -> showProgress(percent));
 +                    }
 +                });
 +                runOnUiThread(() -> launch(container));
@@ -792,7 +792,7 @@ index 0000000..19d47be
 +        AppUtils.keepScreenOn(this);
 +    }
 +
-+    private void setProgress(int percent) {
++    private void showProgress(int percent) {
 +        pbProgress.setIndeterminate(false);
 +        pbProgress.setProgress(percent);
 +        tvProgress.setVisibility(View.VISIBLE);
@@ -1005,3 +1005,6 @@ index 0000000..1708a6e
 +    <string name="studio_footer">Runs the Windows version of Roblox Studio with Wine and Box64 (based on Winlator, LGPL-2.1). Studio itself is downloaded from Roblox\'s official servers on first launch and is not included in this app.</string>
 +    <string name="studio_storage_permission">Storage permission is needed to install the Windows environment.</string>
 +</resources>
+diff --git a/gradlew b/gradlew
+old mode 100644
+new mode 100755

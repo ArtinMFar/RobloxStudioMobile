@@ -9,6 +9,19 @@ Wine, Box64, DXVK and the Turnip/Vortek Vulkan drivers into an Android app.
 > Roblox's official deployment servers (`setup.rbxcdn.com`) the first time it starts, exactly like
 > Roblox's own installer does, and keeps it updated on later launches.
 
+## Download & install
+
+- APK: [`apk/RobloxStudioMobile.apk`](apk/RobloxStudioMobile.apk) (≈156 MB, stored with Git LFS —
+  use GitHub's "Download raw file" button). Version `11.2-studio1`, arm64-v8a only.
+- SHA-256: `3a24644dfb29736e9e71bce02576bc678e13737bd995f8c8fbca716f1648b91f`
+- Signing certificate SHA-256: `f7e1905ea92f6341e4d585f5514f7d0a17e36a2c18e5425e5f5cb0617e4c1e69`
+  (personal key; the keystore and its password are not in this repo).
+
+1. Uninstall the official Winlator app if you have it (same package name, different signature).
+2. Open the APK on the phone and allow "Install unknown apps" for your browser/file manager.
+3. Open **Roblox Studio Mobile**, allow storage access, and keep it on Wi-Fi for the first start
+   (about 575 MB is downloaded from Roblox).
+
 ## What happens when you open the app
 
 1. Installs the Windows environment (Wine + Box64 rootfs bundled with Winlator) — first launch only.
