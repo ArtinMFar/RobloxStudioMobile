@@ -12,8 +12,8 @@ Wine, Box64, DXVK and the Turnip/Vortek Vulkan drivers into an Android app.
 ## Download & install
 
 - APK: [`apk/RobloxStudioMobile.apk`](apk/RobloxStudioMobile.apk) (≈156 MB, stored with Git LFS —
-  use GitHub's "Download raw file" button). Version `11.2-studio1`, arm64-v8a only.
-- SHA-256: `3a24644dfb29736e9e71bce02576bc678e13737bd995f8c8fbca716f1648b91f`
+  use GitHub's "Download raw file" button). Version `11.2-studio2`, arm64-v8a only.
+- SHA-256: `89bad173db4a4db056c2fdd2bc469ea77617460cf0fb40ce2debbf70ca71572e`
 - Signing certificate SHA-256: `f7e1905ea92f6341e4d585f5514f7d0a17e36a2c18e5425e5f5cb0617e4c1e69`
   (personal key; the keystore and its password are not in this repo).
 

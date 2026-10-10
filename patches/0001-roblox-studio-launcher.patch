@@ -13,7 +13,7 @@ index f7415cf..ba0375d 100644
 +*.jks
 +*.keystore
 diff --git a/app/build.gradle b/app/build.gradle
-index 7690275..a581695 100644
+index 7690275..49bfacf 100644
 --- a/app/build.gradle
 +++ b/app/build.gradle
 @@ -1,5 +1,11 @@
@@ -28,12 +28,14 @@ index 7690275..a581695 100644
  android {
      namespace 'com.winlator'
      compileSdk 35
-@@ -9,10 +15,31 @@ android {
+@@ -8,11 +14,32 @@ android {
+         applicationId 'com.winlator'
          minSdkVersion 26
          targetSdkVersion 28
-         versionCode 33
+-        versionCode 33
 -        versionName "11.2"
-+        versionName "11.2-studio1"
++        versionCode 34
++        versionName "11.2-studio2"
 +    }
 +
 +    signingConfigs {
@@ -157,10 +159,10 @@ index 667f1b3..fa65a5f 100644
          if (execPath != null) {
 diff --git a/app/src/main/java/com/winlator/studio/StudioInstaller.java b/app/src/main/java/com/winlator/studio/StudioInstaller.java
 new file mode 100644
-index 0000000..3caca66
+index 0000000..a1ec9e3
 --- /dev/null
 +++ b/app/src/main/java/com/winlator/studio/StudioInstaller.java
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,338 @@
 +package com.winlator.studio;
 +
 +import android.os.StatFs;
@@ -446,10 +448,14 @@ index 0000000..3caca66
 +            byte[] buffer = new byte[65536];
 +            while (entries.hasMoreElements()) {
 +                ZipEntry entry = entries.nextElement();
++                // Roblox packages use Windows separators and contain folder markers such as "\" and "\Packages\".
 +                String name = entry.getName().replace('\\', '/');
++                boolean isDirectory = entry.isDirectory() || name.endsWith("/");
++                while (name.startsWith("/")) name = name.substring(1);
++                if (name.isEmpty()) continue;
 +                File file = new File(destination, name);
-+                if (!file.getCanonicalPath().startsWith(root)) throw new IOException("Bad entry in "+zipFile.getName()+": "+name);
-+                if (entry.isDirectory() || name.endsWith("/")) {
++                if (!file.getCanonicalPath().startsWith(root)) throw new IOException("Bad entry in "+zipFile.getName()+": "+entry.getName());
++                if (isDirectory) {
 +                    file.mkdirs();
 +                    continue;
 +                }
