@@ -69,8 +69,14 @@ with the same CDN logic as the app, and launch it on a virtual X display. Result
 
 ![Roblox Studio running under Wine on Colab](docs/colab-studio-screenshot.png)
 
-Colab VMs have no KVM, so they can't run an ARM64 Android emulator at usable speed; this test
-covers the Studio-under-Wine part, not the APK itself.
+That test covers the Studio-under-Wine part, not the APK itself.
+
+`colab/stage3_emulator.py` + `stage3b_install.py` tried the APK in an Android 11 x86_64 emulator on
+an 8-vCPU Colab VM. Colab has no KVM, so the emulator runs on pure software CPU emulation: Android
+booted (7.6 min) and the APK installed, but every time the app was opened Android killed it after
+its fixed 10-second start limit ("failed to attach … start timeout"), because the arm64-only app
+must also go through Android's ARM→x86 translator. So the APK could not be shown running in an
+emulator; it needs a real ARM64 phone.
 
 ## Changes to Winlator (`patches/0001-roblox-studio-launcher.patch`)
 
