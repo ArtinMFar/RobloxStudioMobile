@@ -13,7 +13,7 @@ index f7415cf..ba0375d 100644
 +*.jks
 +*.keystore
 diff --git a/app/build.gradle b/app/build.gradle
-index 7690275..49bfacf 100644
+index 7690275..3982b52 100644
 --- a/app/build.gradle
 +++ b/app/build.gradle
 @@ -1,5 +1,11 @@
@@ -34,8 +34,8 @@ index 7690275..49bfacf 100644
          targetSdkVersion 28
 -        versionCode 33
 -        versionName "11.2"
-+        versionCode 34
-+        versionName "11.2-studio2"
++        versionCode 35
++        versionName "11.2-studio3"
 +    }
 +
 +    signingConfigs {
@@ -99,10 +99,19 @@ index 1262c0d..facd829 100644
              android:exported="false"
              android:theme="@style/AppThemeFullscreenDark"
 diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
-index 667f1b3..fa65a5f 100644
+index 667f1b3..839d55e 100644
 --- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
 +++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
-@@ -135,6 +135,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -66,6 +66,8 @@ import com.winlator.inputcontrols.ControlsProfile;
+ import com.winlator.inputcontrols.ExternalController;
+ import com.winlator.inputcontrols.InputControlsManager;
+ import com.winlator.math.Mathf;
++import com.winlator.studio.Diagnostics;
++import com.winlator.studio.StudioInstaller;
+ import com.winlator.renderer.GLRenderer;
+ import com.winlator.services.ForegroundService;
+ import com.winlator.widget.FrameRating;
+@@ -135,12 +137,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
      private DebugDialog debugDialog;
      public int frameRatingWindowId = -1;
      private Win32AppWorkarounds win32AppWorkarounds;
@@ -110,7 +119,14 @@ index 667f1b3..fa65a5f 100644
      private String screenEffectProfile;
  
      @Override
-@@ -166,6 +167,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+     public void onCreate(Bundle savedInstanceState) {
+         AppUtils.setActivityTheme(this);
+         super.onCreate(savedInstanceState);
++        Diagnostics.installCrashHandler(this);
+         AppUtils.hideSystemUI(this);
+         AppUtils.keepScreenOn(this);
+         setContentView(R.layout.xserver_display_activity);
+@@ -166,9 +170,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
          rootFS = RootFS.find(this);
  
          if (!isGenerateWineprefix()) {
@@ -118,7 +134,12 @@ index 667f1b3..fa65a5f 100644
              ContainerManager containerManager = new ContainerManager(this);
              container = containerManager.getContainerById(getIntent().getIntExtra("container_id", 0));
              containerManager.activateContainer(container);
-@@ -341,6 +343,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
++            // Keep the Wine/Box64 output of Roblox Studio sessions for the in-app crash report.
++            if (StudioInstaller.isStudioContainer(container)) ProcessHelper.addDebugCallback(Diagnostics.startSessionLog(this));
+ 
+             boolean wineprefixNeedsUpdate = container.getExtra("wineprefixNeedsUpdate").equals("t");
+             if (wineprefixNeedsUpdate) {
+@@ -341,6 +348,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
  
      @Override
      protected void onDestroy() {
@@ -126,7 +147,15 @@ index 667f1b3..fa65a5f 100644
          winHandler.stop();
          if (environment != null) environment.stopEnvironmentComponents();
          ForegroundService.stopSession(this);
-@@ -948,6 +951,22 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -514,6 +522,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+             String guestExecutable = "wine explorer /desktop="+desktopName+","+xServer.screenInfo+" "+getWineStartCommand();
+             guestProgramLauncherComponent.setGuestExecutable(guestExecutable);
+ 
++            if (StudioInstaller.isStudioContainer(container) && !enableWineDebug) envVars.put("WINEDEBUG", "-all,err+all");
+             envVars.putAll(container.getEnvVars());
+             if (shortcut != null) envVars.putAll(shortcut.getExtra("envVars"));
+             if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "1");
+@@ -948,6 +957,22 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
          }
      }
  
@@ -149,7 +178,7 @@ index 667f1b3..fa65a5f 100644
      private boolean isGenerateWineprefix() {
          return getIntent().getBooleanExtra("generate_wineprefix", false);
      }
-@@ -976,6 +995,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -976,6 +1001,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                      execPath = null;
                  }
              }
@@ -157,12 +186,385 @@ index 667f1b3..fa65a5f 100644
          }
  
          if (execPath != null) {
+diff --git a/app/src/main/java/com/winlator/core/FileUtils.java b/app/src/main/java/com/winlator/core/FileUtils.java
+index b503fc0..3906563 100644
+--- a/app/src/main/java/com/winlator/core/FileUtils.java
++++ b/app/src/main/java/com/winlator/core/FileUtils.java
+@@ -407,14 +407,25 @@ public abstract class FileUtils {
+     }
+ 
+     public static void openIntent(Activity activity, String path) {
+-        Intent intent;
+-        if (path.startsWith("file://")) {
+-            File file = new File(Uri.decode(path.replace("file://", "")));
+-            intent = new Intent(Intent.ACTION_VIEW, FileProvider.getUriForFile(activity, "com.winlator.FileProvider", file));
+-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+-        }
+-        else intent = new Intent(Intent.ACTION_VIEW, Uri.parse(path));
+-        intent.addFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT | Intent.FLAG_ACTIVITY_NEW_TASK);
+-        activity.startActivity(intent);
++        // Wine can hand over the URL with NULs, whitespace or quotes around it.
++        path = path.replace("\0", "").trim();
++        if (path.length() >= 2 && path.startsWith("\"") && path.endsWith("\"")) path = path.substring(1, path.length() - 1).trim();
++        try {
++            Intent intent;
++            if (path.startsWith("file://")) {
++                File file = new File(Uri.decode(path.replace("file://", "")));
++                intent = new Intent(Intent.ACTION_VIEW, FileProvider.getUriForFile(activity, "com.winlator.FileProvider", file));
++                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
++            }
++            else intent = new Intent(Intent.ACTION_VIEW, Uri.parse(path));
++            intent.addFlags(Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT | Intent.FLAG_ACTIVITY_NEW_TASK);
++            activity.startActivity(intent);
++        }
++        catch (RuntimeException e) {
++            // No app for this link (ActivityNotFoundException), or a file outside the shared folders:
++            // report it instead of taking the whole app (and the running Windows program) down.
++            final String message = "Could not open "+path+" ("+e.getClass().getSimpleName()+")";
++            activity.runOnUiThread(() -> AppUtils.showToast(activity, message));
++        }
+     }
+ }
+diff --git a/app/src/main/java/com/winlator/studio/Diagnostics.java b/app/src/main/java/com/winlator/studio/Diagnostics.java
+new file mode 100644
+index 0000000..9ccefd4
+--- /dev/null
++++ b/app/src/main/java/com/winlator/studio/Diagnostics.java
+@@ -0,0 +1,328 @@
++package com.winlator.studio;
++
++import android.app.ActivityManager;
++import android.app.ApplicationExitInfo;
++import android.content.Context;
++import android.content.SharedPreferences;
++import android.content.pm.PackageInfo;
++import android.os.Build;
++import android.os.Environment;
++
++import androidx.preference.PreferenceManager;
++
++import com.winlator.container.Container;
++import com.winlator.core.Callback;
++import com.winlator.core.GPUHelper;
++
++import java.io.BufferedWriter;
++import java.io.ByteArrayOutputStream;
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.FileWriter;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.OutputStreamWriter;
++import java.io.PrintWriter;
++import java.io.RandomAccessFile;
++import java.io.Writer;
++import java.nio.charset.StandardCharsets;
++import java.text.SimpleDateFormat;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Date;
++import java.util.List;
++import java.util.Locale;
++
++/**
++ * Collects what is needed to debug a failed Roblox Studio session on a phone without adb:
++ * Java crash traces, the Wine/Box64 output of the session, Android's record of why the app
++ * process died (incl. native crashes), and Roblox Studio's own log files.
++ */
++public final class Diagnostics {
++    public static final String REPORT_NAME = "RobloxStudioMobile-report.txt";
++    private static final String PREF_LAST_SEEN_EXIT = "studio_last_seen_exit_timestamp";
++    private static final long MAX_SESSION_LOG_BYTES = 4L << 20;
++    private static boolean crashHandlerInstalled = false;
++
++    private Diagnostics() {}
++
++    private static File getDir(Context context) {
++        File dir = new File(context.getFilesDir(), "diagnostics");
++        dir.mkdirs();
++        return dir;
++    }
++
++    /** Writes the stack trace of any uncaught Java exception to diagnostics/java-crash.txt before the app dies. */
++    public static synchronized void installCrashHandler(Context context) {
++        if (crashHandlerInstalled) return;
++        crashHandlerInstalled = true;
++        final File file = new File(getDir(context), "java-crash.txt");
++        final Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
++        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
++            try (PrintWriter writer = new PrintWriter(new FileWriter(file))) {
++                writer.println(timestamp(System.currentTimeMillis())+" uncaught exception in thread \""+thread.getName()+"\"");
++                throwable.printStackTrace(writer);
++            }
++            catch (Throwable ignored) {}
++            if (previous != null) previous.uncaughtException(thread, throwable);
++        });
++    }
++
++    /** Returns a callback that appends Wine/Box64 output of this session to diagnostics/session.log. */
++    public static Callback<String> startSessionLog(Context context) {
++        File dir = getDir(context);
++        File current = new File(dir, "session.log");
++        File previous = new File(dir, "session-prev.log");
++        previous.delete();
++        current.renameTo(previous);
++
++        final Writer writer;
++        try {
++            writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(current), StandardCharsets.UTF_8));
++            writer.write(timestamp(System.currentTimeMillis())+" session started\n");
++            writer.flush();
++        }
++        catch (IOException e) {
++            return (line) -> {};
++        }
++
++        final long[] written = {0};
++        return (line) -> {
++            if (written[0] > MAX_SESSION_LOG_BYTES) return;
++            try {
++                writer.write(line);
++                writer.write('\n');
++                // Flush every line: if the app dies natively, nothing buffered would survive.
++                writer.flush();
++                written[0] += line.length() + 1;
++            }
++            catch (IOException ignored) {}
++        };
++    }
++
++    /** A short description of an abnormal app exit that happened since the last call to {@link #acknowledgeExits}, or null. */
++    public static String getUnseenCrash(Context context) {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return readJavaCrashSummary(context);
++        long lastSeen = PreferenceManager.getDefaultSharedPreferences(context).getLong(PREF_LAST_SEEN_EXIT, 0);
++        for (ApplicationExitInfo info : getExitInfos(context, 5)) {
++            if (info.getTimestamp() <= lastSeen) break;
++            if (isAbnormal(info.getReason())) {
++                String description = info.getDescription() != null ? ": "+info.getDescription() : "";
++                return reasonName(info.getReason())+description;
++            }
++        }
++        return null;
++    }
++
++    public static void acknowledgeExits(Context context) {
++        SharedPreferences.Editor editor = PreferenceManager.getDefaultSharedPreferences(context).edit();
++        editor.putLong(PREF_LAST_SEEN_EXIT, System.currentTimeMillis()).apply();
++    }
++
++    public static String buildReport(Context context, Container container) {
++        StringBuilder sb = new StringBuilder();
++        sb.append("Roblox Studio Mobile diagnostics report\n");
++        sb.append("Generated: ").append(timestamp(System.currentTimeMillis())).append("\n\n");
++
++        sb.append("== Device ==\n");
++        try {
++            PackageInfo packageInfo = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
++            sb.append("App: ").append(packageInfo.versionName).append(" (").append(packageInfo.versionCode).append(")\n");
++        }
++        catch (Exception ignored) {}
++        sb.append("Device: ").append(Build.MANUFACTURER).append(" ").append(Build.MODEL).append(" (").append(Build.DEVICE).append(")\n");
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) sb.append("SoC: ").append(Build.SOC_MANUFACTURER).append(" ").append(Build.SOC_MODEL).append("\n");
++        sb.append("Hardware: ").append(Build.HARDWARE).append("\n");
++        sb.append("Android: ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
++        try {
++            sb.append("GPU: ").append(GPUHelper.glGetRenderer(context)).append(" / ").append(GPUHelper.glGetVersion(context)).append("\n");
++        }
++        catch (Throwable e) {
++            sb.append("GPU: unavailable (").append(e).append(")\n");
++        }
++        ActivityManager activityManager = (ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
++        ActivityManager.MemoryInfo memoryInfo = new ActivityManager.MemoryInfo();
++        activityManager.getMemoryInfo(memoryInfo);
++        sb.append(String.format(Locale.ENGLISH, "RAM: %.1f GB total, %.1f GB available\n", memoryInfo.totalMem / 1e9, memoryInfo.availMem / 1e9));
++
++        if (container != null) {
++            sb.append("\n== Container ==\n");
++            sb.append("Graphics driver: ").append(container.getGraphicsDriver()).append("\n");
++            sb.append("DX wrapper: ").append(container.getDXWrapper()).append(" ").append(container.getDXWrapperConfig()).append("\n");
++            sb.append("Box64 preset: ").append(container.getBox64Preset()).append("\n");
++            sb.append("Screen size: ").append(container.getScreenSize()).append("\n");
++            sb.append("Env vars: ").append(container.getEnvVars()).append("\n");
++            sb.append("Studio: ").append(container.getExtra(StudioInstaller.EXTRA_VERSION)).append(" ").append(container.getExtra(StudioInstaller.EXTRA_GUID)).append("\n");
++        }
++
++        sb.append("\n== Recent app exits (Android) ==\n");
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
++            List<ApplicationExitInfo> infos = getExitInfos(context, 6);
++            if (infos.isEmpty()) sb.append("none recorded\n");
++            for (ApplicationExitInfo info : infos) {
++                sb.append(timestamp(info.getTimestamp())).append("  ").append(reasonName(info.getReason()))
++                  .append("  status=").append(info.getStatus())
++                  .append("  importance=").append(info.getImportance())
++                  .append(String.format(Locale.ENGLISH, "  pss=%dMB rss=%dMB", info.getPss() / 1024, info.getRss() / 1024));
++                if (info.getDescription() != null) sb.append("  \"").append(info.getDescription()).append("\"");
++                sb.append("\n");
++            }
++            for (ApplicationExitInfo info : infos) {
++                if (!isAbnormal(info.getReason())) continue;
++                String trace = readTrace(info);
++                if (trace != null) sb.append("\n-- Trace of the last abnormal exit (").append(reasonName(info.getReason())).append(") --\n").append(trace).append("\n");
++                break;
++            }
++        }
++        else sb.append("needs Android 11+\n");
++
++        sb.append("\n== Last Java crash ==\n");
++        File javaCrash = new File(getDir(context), "java-crash.txt");
++        sb.append(javaCrash.isFile() ? tail(javaCrash, 120) : "none\n");
++
++        sb.append("\n== Wine/Box64 output, last session ==\n").append(tail(new File(getDir(context), "session.log"), 250));
++        sb.append("\n== Wine/Box64 output, session before ==\n").append(tail(new File(getDir(context), "session-prev.log"), 120));
++
++        if (container != null) {
++            File logsDir = new File(container.getRootDir(), ".wine/drive_c/users/xuser/AppData/Local/Roblox/logs");
++            File[] logs = logsDir.listFiles((dir, name) -> name.endsWith(".log"));
++            sb.append("\n== Roblox Studio logs (").append(logs != null ? logs.length : 0).append(" files) ==\n");
++            if (logs != null) {
++                Arrays.sort(logs, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
++                for (int i = 0; i < Math.min(3, logs.length); i++) {
++                    sb.append("\n-- ").append(logs[i].getName()).append(" (").append(timestamp(logs[i].lastModified())).append(") --\n");
++                    sb.append(tail(logs[i], 150));
++                }
++            }
++        }
++        return sb.toString();
++    }
++
++    /** Saves the report to the public Download folder (falls back to the app's external files dir). */
++    public static File saveReport(Context context, String report) throws IOException {
++        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
++        File file = new File(dir, REPORT_NAME);
++        try {
++            dir.mkdirs();
++            writeFile(file, report);
++            return file;
++        }
++        catch (IOException e) {
++            File fallback = new File(context.getExternalFilesDir(null), REPORT_NAME);
++            writeFile(fallback, report);
++            return fallback;
++        }
++    }
++
++    private static void writeFile(File file, String text) throws IOException {
++        try (Writer writer = new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8)) {
++            writer.write(text);
++        }
++    }
++
++    private static List<ApplicationExitInfo> getExitInfos(Context context, int max) {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return new ArrayList<>();
++        try {
++            ActivityManager activityManager = (ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
++            return activityManager.getHistoricalProcessExitReasons(context.getPackageName(), 0, max);
++        }
++        catch (Exception e) {
++            return new ArrayList<>();
++        }
++    }
++
++    private static String readJavaCrashSummary(Context context) {
++        File javaCrash = new File(getDir(context), "java-crash.txt");
++        long lastSeen = PreferenceManager.getDefaultSharedPreferences(context).getLong(PREF_LAST_SEEN_EXIT, 0);
++        return javaCrash.isFile() && javaCrash.lastModified() > lastSeen ? "Java crash" : null;
++    }
++
++    private static boolean isAbnormal(int reason) {
++        switch (reason) {
++            case ApplicationExitInfo.REASON_CRASH:
++            case ApplicationExitInfo.REASON_CRASH_NATIVE:
++            case ApplicationExitInfo.REASON_ANR:
++            case ApplicationExitInfo.REASON_LOW_MEMORY:
++            case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE:
++            case ApplicationExitInfo.REASON_INITIALIZATION_FAILURE:
++            case ApplicationExitInfo.REASON_SIGNALED:
++                return true;
++            default:
++                return false;
++        }
++    }
++
++    private static String reasonName(int reason) {
++        switch (reason) {
++            case ApplicationExitInfo.REASON_EXIT_SELF: return "exited normally";
++            case ApplicationExitInfo.REASON_SIGNALED: return "killed by a signal";
++            case ApplicationExitInfo.REASON_LOW_MEMORY: return "killed by Android (low memory)";
++            case ApplicationExitInfo.REASON_CRASH: return "Java crash";
++            case ApplicationExitInfo.REASON_CRASH_NATIVE: return "native crash";
++            case ApplicationExitInfo.REASON_ANR: return "not responding (ANR)";
++            case ApplicationExitInfo.REASON_INITIALIZATION_FAILURE: return "initialization failure";
++            case ApplicationExitInfo.REASON_PERMISSION_CHANGE: return "permission changed";
++            case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: return "killed for excessive resource use";
++            case ApplicationExitInfo.REASON_USER_REQUESTED: return "closed by the user";
++            case ApplicationExitInfo.REASON_USER_STOPPED: return "force-stopped by the user";
++            case ApplicationExitInfo.REASON_DEPENDENCY_DIED: return "dependency died";
++            case ApplicationExitInfo.REASON_OTHER: return "killed by Android (other)";
++            default: return "reason "+reason;
++        }
++    }
++
++    /** ANR traces are text; native crash tombstones are protobuf, so keep their readable strings (frames, libraries). */
++    private static String readTrace(ApplicationExitInfo info) {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null;
++        try (InputStream in = info.getTraceInputStream()) {
++            if (in == null) return null;
++            ByteArrayOutputStream out = new ByteArrayOutputStream();
++            byte[] buffer = new byte[16384];
++            int read;
++            while ((read = in.read(buffer)) != -1 && out.size() < (1 << 20)) out.write(buffer, 0, read);
++            byte[] data = out.toByteArray();
++
++            StringBuilder sb = new StringBuilder();
++            StringBuilder run = new StringBuilder();
++            int lines = 0;
++            for (byte b : data) {
++                if (b >= 0x20 && b < 0x7f) {
++                    run.append((char)b);
++                    continue;
++                }
++                if (b == '\n' && info.getReason() == ApplicationExitInfo.REASON_ANR) run.append(' ');
++                if (run.length() >= 5) {
++                    sb.append(run).append('\n');
++                    if (++lines >= 200) break;
++                }
++                run.setLength(0);
++            }
++            return sb.toString();
++        }
++        catch (Exception e) {
++            return "could not read trace: "+e;
++        }
++    }
++
++    private static String tail(File file, int maxLines) {
++        if (!file.isFile()) return "(none)\n";
++        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
++            long length = raf.length();
++            long start = Math.max(0, length - 64 * 1024);
++            byte[] bytes = new byte[(int)(length - start)];
++            raf.seek(start);
++            raf.readFully(bytes);
++            String[] lines = new String(bytes, StandardCharsets.UTF_8).split("\n");
++            StringBuilder sb = new StringBuilder();
++            for (int i = Math.max(0, lines.length - maxLines); i < lines.length; i++) sb.append(lines[i]).append('\n');
++            return sb.toString();
++        }
++        catch (IOException e) {
++            return "(could not read: "+e+")\n";
++        }
++    }
++
++    private static String timestamp(long millis) {
++        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ENGLISH).format(new Date(millis));
++    }
++}
 diff --git a/app/src/main/java/com/winlator/studio/StudioInstaller.java b/app/src/main/java/com/winlator/studio/StudioInstaller.java
 new file mode 100644
-index 0000000..a1ec9e3
+index 0000000..6ff120f
 --- /dev/null
 +++ b/app/src/main/java/com/winlator/studio/StudioInstaller.java
-@@ -0,0 +1,338 @@
+@@ -0,0 +1,343 @@
 +package com.winlator.studio;
 +
 +import android.os.StatFs;
@@ -205,6 +607,7 @@ index 0000000..a1ec9e3
 +    public static final String EXECUTABLE = "RobloxStudioBeta.exe";
 +    public static final String EXTRA_GUID = "studioGuid";
 +    public static final String EXTRA_VERSION = "studioVersion";
++    public static final String EXTRA_STUDIO_CONTAINER = "robloxStudio";
 +    private static final int MAX_ATTEMPTS = 3;
 +    private static final String APP_SETTINGS =
 +        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n" +
@@ -264,6 +667,10 @@ index 0000000..a1ec9e3
 +    }
 +
 +    private StudioInstaller() {}
++
++    public static boolean isStudioContainer(Container container) {
++        return container != null && container.getExtra(EXTRA_STUDIO_CONTAINER).equals("1");
++    }
 +
 +    public static File getInstallDir(Container container) {
 +        return new File(container.getRootDir(), INSTALL_DIR);
@@ -503,10 +910,10 @@ index 0000000..a1ec9e3
 +}
 diff --git a/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java b/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java
 new file mode 100644
-index 0000000..3252851
+index 0000000..c4f215d
 --- /dev/null
 +++ b/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,359 @@
 +package com.winlator.studio;
 +
 +import android.Manifest;
@@ -547,7 +954,6 @@ index 0000000..3252851
 + */
 +public class StudioLauncherActivity extends AppCompatActivity {
 +    private static final int PERMISSION_REQUEST_CODE = 1;
-+    private static final String EXTRA_STUDIO_CONTAINER = "robloxStudio";
 +    private static final String AUTH_SCHEME = "roblox-studio-auth";
 +    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 +    private TextView tvStatus;
@@ -564,6 +970,7 @@ index 0000000..3252851
 +    protected void onCreate(Bundle savedInstanceState) {
 +        AppUtils.setActivityTheme(this);
 +        super.onCreate(savedInstanceState);
++        Diagnostics.installCrashHandler(this);
 +
 +        Intent intent = getIntent();
 +        boolean isAppRestart = (intent.getFlags() & Intent.FLAG_ACTIVITY_CLEAR_TASK) != 0 && intent.getData() == null;
@@ -588,10 +995,16 @@ index 0000000..3252851
 +            start();
 +        });
 +        findViewById(R.id.BTAdvanced).setOnClickListener((v) -> openWinlator(null));
++        findViewById(R.id.BTReport).setOnClickListener((v) -> saveCrashReport());
 +
 +        String authUri = getAuthUri(intent);
++        String lastCrash = authUri == null ? Diagnostics.getUnseenCrash(this) : null;
 +        if (authUri != null) {
 +            handleAuthCallback(authUri);
++        }
++        else if (lastCrash != null) {
++            // Don't relaunch straight into the same crash: let the user save a report first.
++            showIdle("The last session crashed ("+lastCrash+").\n\nTap \"Save crash report\" and send the file, or launch again.");
 +        }
 +        else if (isAppRestart) {
 +            // Studio was closed: don't relaunch it automatically.
@@ -648,6 +1061,7 @@ index 0000000..3252851
 +            return;
 +        }
 +        busy = true;
++        Diagnostics.acknowledgeExits(this);
 +        showBusy("Preparing…");
 +        if (requestPermissionsIfNeeded()) return;
 +        installRootFS();
@@ -685,7 +1099,7 @@ index 0000000..3252851
 +    private void ensureContainer() {
 +        ContainerManager manager = new ContainerManager(this);
 +        for (Container container : manager.getContainers()) {
-+            if (container.getExtra(EXTRA_STUDIO_CONTAINER).equals("1")) {
++            if (StudioInstaller.isStudioContainer(container)) {
 +                ensureStudio(container);
 +                return;
 +            }
@@ -713,7 +1127,7 @@ index 0000000..3252851
 +                showError("Could not create the Roblox Studio container.");
 +                return;
 +            }
-+            container.putExtra(EXTRA_STUDIO_CONTAINER, "1");
++            container.putExtra(StudioInstaller.EXTRA_STUDIO_CONTAINER, "1");
 +            container.saveData();
 +            ensureStudio(container);
 +        });
@@ -780,6 +1194,40 @@ index 0000000..3252851
 +        finish();
 +    }
 +
++    private void saveCrashReport() {
++        tvStatus.setText("Collecting crash report…");
++        new Thread(() -> {
++            Container studioContainer = null;
++            if (RootFS.find(this).isValid()) {
++                for (Container container : new ContainerManager(this).getContainers()) {
++                    if (StudioInstaller.isStudioContainer(container)) studioContainer = container;
++                }
++            }
++            String report = Diagnostics.buildReport(this, studioContainer);
++            String status;
++            try {
++                File file = Diagnostics.saveReport(this, report);
++                status = "Crash report saved to "+file.getPath()+"\n\nSend that file (or share it below).";
++            }
++            catch (Exception e) {
++                status = "Could not save the report file ("+e.getMessage()+"), but you can still share it.";
++            }
++            Diagnostics.acknowledgeExits(this);
++            final String finalStatus = status;
++            runOnUiThread(() -> {
++                tvStatus.setText(finalStatus);
++                Intent send = new Intent(Intent.ACTION_SEND);
++                send.setType("text/plain");
++                send.putExtra(Intent.EXTRA_SUBJECT, Diagnostics.REPORT_NAME);
++                send.putExtra(Intent.EXTRA_TEXT, report.length() > 100000 ? report.substring(report.length() - 100000) : report);
++                try {
++                    startActivity(Intent.createChooser(send, "Share crash report"));
++                }
++                catch (Exception ignored) {}
++            });
++        }).start();
++    }
++
 +    private void openWinlator(Bundle extras) {
 +        Intent intent = new Intent(this, MainActivity.class);
 +        if (extras != null) intent.putExtras(extras);
@@ -825,6 +1273,32 @@ index 0000000..3252851
 +        btReinstall.setVisibility(View.GONE);
 +    }
 +}
+diff --git a/app/src/main/java/com/winlator/winhandler/WinHandler.java b/app/src/main/java/com/winlator/winhandler/WinHandler.java
+index 3318b9f..b04c42c 100644
+--- a/app/src/main/java/com/winlator/winhandler/WinHandler.java
++++ b/app/src/main/java/com/winlator/winhandler/WinHandler.java
+@@ -1,5 +1,6 @@
+ package com.winlator.winhandler;
+ 
++import android.util.Log;
+ import android.view.KeyEvent;
+ import android.view.MotionEvent;
+ 
+@@ -445,7 +446,13 @@ public class WinHandler {
+                     synchronized (actions) {
+                         receiveData.rewind();
+                         byte requestCode = receiveData.get();
+-                        handleRequest(requestCode, receivePacket.getPort());
++                        try {
++                            handleRequest(requestCode, receivePacket.getPort());
++                        }
++                        catch (RuntimeException e) {
++                            // An unexpected request from the Windows side must not crash the whole app.
++                            Log.e("WinHandler", "request "+requestCode+" failed", e);
++                        }
+                     }
+                 }
+             }
 diff --git a/app/src/main/java/com/winlator/xenvironment/RootFSInstaller.java b/app/src/main/java/com/winlator/xenvironment/RootFSInstaller.java
 index 08fbf80..a2dc088 100644
 --- a/app/src/main/java/com/winlator/xenvironment/RootFSInstaller.java
@@ -863,10 +1337,10 @@ index 08fbf80..a2dc088 100644
      private static void clearOptDir(File optDir) {
 diff --git a/app/src/main/res/layout/studio_launcher_activity.xml b/app/src/main/res/layout/studio_launcher_activity.xml
 new file mode 100644
-index 0000000..75850ea
+index 0000000..51f7d5b
 --- /dev/null
 +++ b/app/src/main/res/layout/studio_launcher_activity.xml
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,100 @@
 +<?xml version="1.0" encoding="utf-8"?>
 +<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
 +    android:layout_width="match_parent"
@@ -944,6 +1418,13 @@ index 0000000..75850ea
 +            android:visibility="gone" />
 +
 +        <Button
++            android:id="@+id/BTReport"
++            style="?android:attr/borderlessButtonStyle"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:text="@string/studio_save_report" />
++
++        <Button
 +            android:id="@+id/BTAdvanced"
 +            style="?android:attr/borderlessButtonStyle"
 +            android:layout_width="match_parent"
@@ -998,15 +1479,16 @@ index e943712..d173d2c 100644
      <string name="remove">Remove</string>
 diff --git a/app/src/main/res/values/strings_studio.xml b/app/src/main/res/values/strings_studio.xml
 new file mode 100644
-index 0000000..1708a6e
+index 0000000..41b6799
 --- /dev/null
 +++ b/app/src/main/res/values/strings_studio.xml
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,10 @@
 +<?xml version="1.0" encoding="utf-8"?>
 +<resources>
 +    <string name="studio_launch">Launch Roblox Studio</string>
 +    <string name="studio_retry">Retry</string>
 +    <string name="studio_reinstall">Re-download Roblox Studio</string>
++    <string name="studio_save_report">Save crash report</string>
 +    <string name="studio_advanced">Winlator settings (advanced)</string>
 +    <string name="studio_footer">Runs the Windows version of Roblox Studio with Wine and Box64 (based on Winlator, LGPL-2.1). Studio itself is downloaded from Roblox\'s official servers on first launch and is not included in this app.</string>
 +    <string name="studio_storage_permission">Storage permission is needed to install the Windows environment.</string>

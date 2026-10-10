@@ -12,8 +12,8 @@ Wine, Box64, DXVK and the Turnip/Vortek Vulkan drivers into an Android app.
 ## Download & install
 
 - APK: [`apk/RobloxStudioMobile.apk`](apk/RobloxStudioMobile.apk) (≈156 MB, stored with Git LFS —
-  use GitHub's "Download raw file" button). Version `11.2-studio2`, arm64-v8a only.
-- SHA-256: `89bad173db4a4db056c2fdd2bc469ea77617460cf0fb40ce2debbf70ca71572e`
+  use GitHub's "Download raw file" button). Version `11.2-studio3`, arm64-v8a only.
+- SHA-256: `aee4211ac7021b09839f870806643e627c2e84f6cd32f70d191fb0054a2cacd6`
 - Signing certificate SHA-256: `f7e1905ea92f6341e4d585f5514f7d0a17e36a2c18e5425e5f5cb0617e4c1e69`
   (personal key; the keystore and its password are not in this repo).
 
@@ -42,6 +42,14 @@ under Box64), so Studio shows **"Launch Failed … Login via Browser"**. Tap **L
 the login page opens in your Android browser, and when roblox.com redirects to the
 `roblox-studio-auth:` link, Android hands it to this app, which passes it to the running Studio —
 the same way it works on Windows.
+
+## If something crashes
+
+The launcher has a **Save crash report** button. It writes `Download/RobloxStudioMobile-report.txt`
+with: Android's record of why the app last died (including native-crash backtraces on Android 12+),
+any Java crash trace, the Wine/Box64 output of the last two Studio sessions, Roblox Studio's own log
+files, and device/GPU/container info. If the previous session crashed, the launcher says so instead
+of relaunching straight away.
 
 ## Requirements / expectations
 
