@@ -12,6 +12,17 @@ import java.nio.channels.FileChannel;
 public class DrawableTest {
     static int failures = 0;
 
+    static native ByteBuffer guardedBuffer(int size);
+
+    /** A drawable whose pixels end exactly at an inaccessible page (like an exactly-sized mmap). */
+    static Drawable guardedDrawable(int id, int w, int h, int base) {
+        Drawable d = new Drawable(id, w, h, null);
+        ByteBuffer b = guardedBuffer(w * h * 4).order(ByteOrder.LITTLE_ENDIAN);
+        for (int i = 0; i < w * h; i++) b.putInt(i * 4, base + i);
+        d.setData(b);
+        return d;
+    }
+
     static void check(boolean ok, String what) {
         System.out.println((ok ? "PASS " : "FAIL ") + what);
         if (!ok) failures++;
@@ -42,6 +53,20 @@ public class DrawableTest {
     public static void main(String[] args) throws Exception {
         System.loadLibrary("winlator");
         String mode = args.length > 0 ? args[0] : "all";
+
+        if (mode.equals("old-copyarea")) {
+            // What happened on the phone: CopyArea asks for more rows than the source has; without
+            // source clipping the native copy reads past the end of the source buffer.
+            Drawable src = guardedDrawable(1, 64, 16, 1);
+            Drawable dst = new Drawable(2, 64, 48, null);
+            java.lang.reflect.Method nativeCopy = Drawable.class.getDeclaredMethod("copyArea", short.class, short.class, short.class, short.class, short.class, short.class, short.class, short.class, ByteBuffer.class, ByteBuffer.class);
+            nativeCopy.setAccessible(true);
+            System.out.println("copying 48 rows out of a 16-row source without clipping...");
+            System.out.flush();
+            nativeCopy.invoke(null, (short)0, (short)0, (short)0, (short)0, (short)64, (short)48, (short)64, (short)64, src.getData(), dst.getData());
+            System.out.println("no crash?!");
+            return;
+        }
 
         if (mode.equals("old-behaviour")) {
             // What happened on the phone: the window's pixels point at the client's read-only image
@@ -115,6 +140,30 @@ public class DrawableTest {
         check(g.getData() == gpu.getVirtualData(), "read-only pixels moved back into the GPU buffer");
         check(gpu.getVirtualData().getInt((47 * 80 + 63) * 4) == 4000 + 47 * 64 + 63, "copied with the right strides (64 -> 80)");
         check(gpu.getVirtualData().getInt(0) == 9, "new pixel drawn into GPU buffer");
+
+        // 7. CopyArea: source rectangle larger than the source drawable (the S25 Ultra crash).
+        Drawable small = guardedDrawable(10, 64, 16, 1);
+        Drawable target = new Drawable(11, 64, 48, null);
+        target.copyArea((short)0, (short)0, (short)0, (short)0, (short)64, (short)48, small);
+        check(px(target, 63, 15, 64) == 1 + 15 * 64 + 63, "CopyArea: rows that exist in the source are copied");
+        check(px(target, 0, 16, 64) == 0, "CopyArea: rows outside the source are left alone");
+        target.copyArea((short)60, (short)10, (short)0, (short)30, (short)20, (short)20, small);
+        check(px(target, 3, 35, 64) == 1 + 15 * 64 + 63 && px(target, 4, 30, 64) == 0, "CopyArea: source clipped on the right and bottom");
+        target.copyArea((short)-5, (short)-3, (short)10, (short)10, (short)8, (short)6, small);
+        check(px(target, 15, 13, 64) == 1 && px(target, 14, 13, 64) != 1, "CopyArea: negative source origin moves the destination");
+        Drawable tiny = guardedDrawable(12, 8, 8, 500);
+        tiny.copyArea((short)0, (short)0, (short)0, (short)0, (short)64, (short)48, target);
+        check(px(tiny, 7, 7, 8) == px(target, 7, 7, 64), "CopyArea: destination clipped to a small exactly-sized buffer");
+        target.copyArea((short)0, (short)0, (short)0, (short)0, (short)64, (short)48, target, GraphicsContext.Function.XOR);
+        check(px(target, 0, 0, 64) == 0, "CopyArea with a GC function also clipped (XOR with itself = 0)");
+
+        // 8. 1-bit images and cursor masks never overrun.
+        Drawable bits = guardedDrawable(13, 32, 4, 0);
+        bits.drawImage((short)0, (short)0, (short)0, (short)0, (short)32, (short)100, (byte)1, guardedBuffer(4 * 100), (short)32, (short)100);
+        check(true, "1-bit image taller than the drawable: clipped");
+        Drawable cursor = guardedDrawable(14, 16, 16, 0);
+        cursor.drawAlphaMaskedBitmap((byte)1, (byte)1, (byte)1, (byte)0, (byte)0, (byte)0, guardedDrawable(15, 8, 8, 0), guardedDrawable(16, 8, 8, 0));
+        check(true, "cursor with a smaller source/mask: skipped instead of overrunning");
 
         System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
         System.exit(failures == 0 ? 0 : 1);

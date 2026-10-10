@@ -13,7 +13,7 @@ index f7415cf..ba0375d 100644
 +*.jks
 +*.keystore
 diff --git a/app/build.gradle b/app/build.gradle
-index 7690275..31e0fdc 100644
+index 7690275..3b6aa17 100644
 --- a/app/build.gradle
 +++ b/app/build.gradle
 @@ -1,5 +1,11 @@
@@ -34,8 +34,8 @@ index 7690275..31e0fdc 100644
          targetSdkVersion 28
 -        versionCode 33
 -        versionName "11.2"
-+        versionCode 38
-+        versionName "11.2-studio6"
++        versionCode 39
++        versionName "11.2-studio7"
 +    }
 +
 +    signingConfigs {
@@ -1789,7 +1789,7 @@ index 08fbf80..a2dc088 100644
  
      private static void clearOptDir(File optDir) {
 diff --git a/app/src/main/java/com/winlator/xserver/Drawable.java b/app/src/main/java/com/winlator/xserver/Drawable.java
-index 2680054..8255089 100644
+index 2680054..7f801e5 100644
 --- a/app/src/main/java/com/winlator/xserver/Drawable.java
 +++ b/app/src/main/java/com/winlator/xserver/Drawable.java
 @@ -18,6 +18,8 @@ public class Drawable extends XResource {
@@ -1877,7 +1877,7 @@ index 2680054..8255089 100644
      }
  
      public Runnable getOnDrawListener() {
-@@ -89,18 +138,27 @@ public class Drawable extends XResource {
+@@ -89,18 +138,30 @@ public class Drawable extends XResource {
      }
  
      public void drawImage(short srcX, short srcY, short dstX, short dstY, short width, short height, byte depth, ByteBuffer data, short totalWidth, short totalHeight) {
@@ -1886,7 +1886,11 @@ index 2680054..8255089 100644
 +        if (this.data == null || data == null) return;
  
          if (depth == 1) {
-             drawBitmap(width, height, data, this.data);
+-            drawBitmap(width, height, data, this.data);
++            // 1 bit per pixel, rows padded to 32 bits; written as width x rows from the top-left.
++            int srcRowBytes = ((width + 31) / 32) * 4;
++            int rows = width > 0 ? Math.min(height, Math.min(data.capacity() / srcRowBytes, this.data.capacity() / (width * 4))) : 0;
++            if (rows > 0) drawBitmap(width, (short)rows, data, this.data);
          }
          else if (depth == 24 || depth == 32) {
 -            dstX = (short)Mathf.clamp(dstX, 0, this.width-1);
@@ -1912,15 +1916,55 @@ index 2680054..8255089 100644
          }
  
          this.data.rewind();
-@@ -130,6 +188,7 @@ public class Drawable extends XResource {
+@@ -117,8 +178,9 @@ public class Drawable extends XResource {
+         y = (short)Mathf.clamp(y, 0, this.height-1);
+         if ((x + width) > this.width) width = (short)(this.width - x);
+         if ((y + height) > this.height) height = (short)(this.height - y);
++        height = (short)Math.min(height, rowsAvailable(this.data, this.getStride(), x, y, width));
+ 
+-        copyArea(x, y, (short)0, (short)0, width, height, this.getStride(), width, this.data, dstData);
++        if (width > 0 && height > 0) copyArea(x, y, (short)0, (short)0, width, height, this.getStride(), width, this.data, dstData);
+ 
+         this.data.rewind();
+         dstData.rewind();
+@@ -130,17 +192,28 @@ public class Drawable extends XResource {
      }
  
      public void copyArea(short srcX, short srcY, short dstX, short dstY, short width, short height, Drawable drawable, GraphicsContext.Function gcFunction) {
 +        ensureWritable();
          if (this.data == null || drawable.data == null) return;
  
-         dstX = (short)Mathf.clamp(dstX, 0, this.width-1);
-@@ -153,6 +212,7 @@ public class Drawable extends XResource {
+-        dstX = (short)Mathf.clamp(dstX, 0, this.width-1);
+-        dstY = (short)Mathf.clamp(dstY, 0, this.height-1);
+-        if ((dstX + width) > this.width) width = (short)(this.width - dstX);
+-        if ((dstY + height) > this.height) height = (short)(this.height - dstY);
+-
+-        if (gcFunction == GraphicsContext.Function.COPY) {
+-            copyArea(srcX, srcY, dstX, dstY, width, height, drawable.getStride(), this.getStride(), drawable.data, this.data);
++        // Clip to the source drawable and to the destination (moving the other rectangle along),
++        // then to both buffers: parts outside the source are not copied (X11 CopyArea semantics),
++        // and the copy can never read or write past either buffer.
++        int sx = srcX, sy = srcY, dx = dstX, dy = dstY, w = width, h = height;
++        if (sx < 0) { dx -= sx; w += sx; sx = 0; }
++        if (sy < 0) { dy -= sy; h += sy; sy = 0; }
++        if (dx < 0) { sx -= dx; w += dx; dx = 0; }
++        if (dy < 0) { sy -= dy; h += dy; dy = 0; }
++        w = Math.min(w, Math.min(drawable.width - sx, this.width - dx));
++        h = Math.min(h, Math.min(drawable.height - sy, this.height - dy));
++
++        short srcStride = drawable.getStride(), dstStride = this.getStride();
++        h = Math.min(h, Math.min(rowsAvailable(drawable.data, srcStride, sx, sy, w), rowsAvailable(this.data, dstStride, dx, dy, w)));
++        if (w > 0 && h > 0) {
++            if (gcFunction == GraphicsContext.Function.COPY) {
++                copyArea((short)sx, (short)sy, (short)dx, (short)dy, (short)w, (short)h, srcStride, dstStride, drawable.data, this.data);
++            }
++            else copyAreaOp((short)sx, (short)sy, (short)dx, (short)dy, (short)w, (short)h, srcStride, dstStride, drawable.data, this.data, gcFunction.ordinal());
+         }
+-        else copyAreaOp(srcX, srcY, dstX, dstY, width, height, drawable.getStride(), this.getStride(), drawable.data, this.data, gcFunction.ordinal());
+ 
+         this.data.rewind();
+         drawable.data.rewind();
+@@ -153,6 +226,7 @@ public class Drawable extends XResource {
      }
  
      public void fillRect(int x, int y, int width, int height, int color) {
@@ -1928,7 +1972,7 @@ index 2680054..8255089 100644
          if (this.data == null) return;
          x = (short)Mathf.clamp(x, 0, this.width-1);
          y = (short)Mathf.clamp(y, 0, this.height-1);
-@@ -171,6 +231,7 @@ public class Drawable extends XResource {
+@@ -171,6 +245,7 @@ public class Drawable extends XResource {
      }
  
      public void drawLine(int x0, int y0, int x1, int y1, int color, int lineWidth) {
@@ -1936,14 +1980,17 @@ index 2680054..8255089 100644
          if (this.data == null) return;
          x0 = Mathf.clamp(x0, 0, width-lineWidth);
          y0 = Mathf.clamp(y0, 0, height-lineWidth);
-@@ -184,6 +245,7 @@ public class Drawable extends XResource {
+@@ -184,7 +259,10 @@ public class Drawable extends XResource {
      }
  
      public void drawAlphaMaskedBitmap(byte foreRed, byte foreGreen, byte foreBlue, byte backRed, byte backGreen, byte backBlue, Drawable srcDrawable, Drawable maskDrawable) {
 +        ensureWritable();
          if (this.data == null || srcDrawable.data == null || maskDrawable.data == null) return;
++        // The native code walks the whole destination and reads source/mask at the same offsets.
++        if (srcDrawable.data.capacity() < this.data.capacity() || maskDrawable.data.capacity() < this.data.capacity()) return;
          drawAlphaMaskedBitmap(foreRed, foreGreen, foreBlue, backRed, backGreen, backBlue, srcDrawable.data, maskDrawable.data, this.data);
          this.data.rewind();
+ 
 diff --git a/app/src/main/java/com/winlator/xserver/SHMSegmentManager.java b/app/src/main/java/com/winlator/xserver/SHMSegmentManager.java
 index cbd5d51..719dbfe 100644
 --- a/app/src/main/java/com/winlator/xserver/SHMSegmentManager.java

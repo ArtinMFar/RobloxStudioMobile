@@ -12,8 +12,8 @@ Wine, Box64, DXVK and the Turnip/Vortek Vulkan drivers into an Android app.
 ## Download & install
 
 - APK: [`apk/RobloxStudioMobile.apk`](apk/RobloxStudioMobile.apk) (≈156 MB, stored with Git LFS —
-  use GitHub's "Download raw file" button). Version `11.2-studio6`, arm64-v8a only.
-- SHA-256: `6512f21d1aff0513224cfe3e68f19351df8338e53aa4a8e05ec60f352282b7f0`
+  use GitHub's "Download raw file" button). Version `11.2-studio7`, arm64-v8a only.
+- SHA-256: `294e7a69844750ca9f43d66596c4ae2337ab2790045f46ab9415240ae5395081`
 - Signing certificate SHA-256: `f7e1905ea92f6341e4d585f5514f7d0a17e36a2c18e5425e5f5cb0617e4c1e69`
   (personal key; the keystore and its password are not in this repo).
 
@@ -104,7 +104,9 @@ emulator; it needs a real ARM64 phone.
   now switch to a writable copy before any write (copy-on-write), are moved off a segment before
   it is unmapped, SHM mappings are reference-counted, `drawImage` clips to both buffers, the GPU
   buffer stride is only used while pixels are in that buffer, and a failed `AHardwareBuffer_lock`
-  no longer yields a garbage pointer. `tests/drawable/run.sh` reproduces the crash scenario on the
+  no longer yields a garbage pointer. Core CopyArea (and PresentPixmap) now clip to the *source*
+  drawable too: copying a rectangle larger than the source read past its buffer (second S25 Ultra
+  crash, right after login); 1-bit images and cursor masks are bounded as well. `tests/drawable/run.sh` reproduces the crash scenario on the
   host with Winlator's real native code and checks the fix.
 - `AppUtils.restartApplication` — ends the process with `killProcess` instead of `Runtime.exit`, which
   could SIGSEGV while the X server/audio/renderer threads were still running.

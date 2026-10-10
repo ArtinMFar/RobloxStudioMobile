@@ -13,6 +13,6 @@ cp "$W/java/com/winlator/math/Mathf.java" "$OUT/src/com/winlator/math/"
 cp -r "$HERE/stubs/." "$OUT/src/"
 cp "$HERE/DrawableTest.java" "$OUT/src/com/winlator/xserver/"
 JH=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")
-gcc -O2 -shared -fPIC -I"$JH/include" -I"$JH/include/linux" -I"$HERE/native" -o "$OUT/classes/libwinlator.so" "$W/cpp/winlator/src/drawable.c"
+gcc -O2 -shared -fPIC -I"$JH/include" -I"$JH/include/linux" -I"$HERE/native" -o "$OUT/classes/libwinlator.so" "$W/cpp/winlator/src/drawable.c" "$HERE/native/guard.c"
 javac -d "$OUT/classes" $(find "$OUT/src" -name '*.java')
-java -Djava.library.path="$OUT/classes" -cp "$OUT/classes" com.winlator.xserver.DrawableTest
+java -XX:ErrorFile="$OUT/hs_err.log" -Djava.library.path="$OUT/classes" -cp "$OUT/classes" com.winlator.xserver.DrawableTest "${2:-all}" || { grep -m1 "si_code" "$OUT/hs_err.log" 2>/dev/null; exit 1; }
