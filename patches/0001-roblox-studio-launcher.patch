@@ -1,0 +1,1007 @@
+diff --git a/.gitignore b/.gitignore
+index f7415cf..ba0375d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -12,4 +12,7 @@
+ /captures
+ .externalNativeBuild
+ .cxx
+-local.properties
+\ No newline at end of file
++local.properties
++keystore.properties
++*.jks
++*.keystore
+diff --git a/app/build.gradle b/app/build.gradle
+index 7690275..a581695 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -1,5 +1,11 @@
+ apply plugin: 'com.android.application'
+ 
++// Release signing: put storeFile/storePassword/keyAlias/keyPassword in keystore.properties
++// (git-ignored) next to settings.gradle. Without it the release APK is left unsigned.
++def keystorePropertiesFile = rootProject.file('keystore.properties')
++def keystoreProperties = new Properties()
++if (keystorePropertiesFile.exists()) keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
++
+ android {
+     namespace 'com.winlator'
+     compileSdk 35
+@@ -9,10 +15,31 @@ android {
+         minSdkVersion 26
+         targetSdkVersion 28
+         versionCode 33
+-        versionName "11.2"
++        versionName "11.2-studio1"
++    }
++
++    signingConfigs {
++        release {
++            if (keystorePropertiesFile.exists()) {
++                storeFile rootProject.file(keystoreProperties['storeFile'])
++                storePassword keystoreProperties['storePassword']
++                keyAlias keystoreProperties['keyAlias']
++                keyPassword keystoreProperties['keyPassword']
++            }
++        }
+     }
+ 
+     buildTypes {
++        release {
++            minifyEnabled true
++            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
++            if (keystorePropertiesFile.exists()) signingConfig signingConfigs.release
++
++            ndk {
++                abiFilters 'arm64-v8a'
++            }
++        }
++
+         debug {
+             minifyEnabled true
+             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 1262c0d..facd829 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -24,7 +24,7 @@
+         android:allowAudioPlaybackCapture="true"
+         android:label="@string/app_name">
+ 
+-        <activity android:name="com.winlator.MainActivity"
++        <activity android:name="com.winlator.studio.StudioLauncherActivity"
+             android:theme="@style/AppThemeDark"
+             android:exported="true"
+             android:screenOrientation="sensor"
+@@ -33,8 +33,21 @@
+                 <action android:name="android.intent.action.MAIN"/>
+                 <category android:name="android.intent.category.LAUNCHER"/>
+             </intent-filter>
++            <!-- Browser login callback from roblox.com ("Login via Browser" in Studio) -->
++            <intent-filter>
++                <action android:name="android.intent.action.VIEW"/>
++                <category android:name="android.intent.category.DEFAULT"/>
++                <category android:name="android.intent.category.BROWSABLE"/>
++                <data android:scheme="roblox-studio-auth"/>
++            </intent-filter>
+         </activity>
+ 
++        <activity android:name="com.winlator.MainActivity"
++            android:theme="@style/AppThemeDark"
++            android:exported="false"
++            android:screenOrientation="sensor"
++            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|density|navigation" />
++
+         <activity android:name="com.winlator.XServerDisplayActivity"
+             android:exported="false"
+             android:theme="@style/AppThemeFullscreenDark"
+diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+index 667f1b3..fa65a5f 100644
+--- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
++++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
+@@ -135,6 +135,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+     private DebugDialog debugDialog;
+     public int frameRatingWindowId = -1;
+     private Win32AppWorkarounds win32AppWorkarounds;
++    private static volatile boolean sessionRunning = false;
+     private String screenEffectProfile;
+ 
+     @Override
+@@ -166,6 +167,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         rootFS = RootFS.find(this);
+ 
+         if (!isGenerateWineprefix()) {
++            sessionRunning = true;
+             ContainerManager containerManager = new ContainerManager(this);
+             container = containerManager.getContainerById(getIntent().getIntExtra("container_id", 0));
+             containerManager.activateContainer(container);
+@@ -341,6 +343,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+ 
+     @Override
+     protected void onDestroy() {
++        sessionRunning = false;
+         winHandler.stop();
+         if (environment != null) environment.stopEnvironmentComponents();
+         ForegroundService.stopSession(this);
+@@ -948,6 +951,22 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+         }
+     }
+ 
++    /** True while a container session (e.g. Roblox Studio) is running in this process. */
++    public static boolean isSessionRunning() {
++        return sessionRunning;
++    }
++
++    @Override
++    protected void onNewIntent(Intent intent) {
++        super.onNewIntent(intent);
++        // Lets other activities run a program inside the running session, e.g. to hand
++        // a roblox-studio-auth: browser login callback to the running Roblox Studio.
++        String extraExecPath = intent.getStringExtra("extra_exec_path");
++        if (extraExecPath != null && environment != null) {
++            winHandler.exec(extraExecPath, intent.getStringExtra("extra_exec_args"));
++        }
++    }
++
+     private boolean isGenerateWineprefix() {
+         return getIntent().getBooleanExtra("generate_wineprefix", false);
+     }
+@@ -976,6 +995,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+                     execPath = null;
+                 }
+             }
++            if (intent.hasExtra("exec_args")) execArgs = " "+intent.getStringExtra("exec_args");
+         }
+ 
+         if (execPath != null) {
+diff --git a/app/src/main/java/com/winlator/studio/StudioInstaller.java b/app/src/main/java/com/winlator/studio/StudioInstaller.java
+new file mode 100644
+index 0000000..3caca66
+--- /dev/null
++++ b/app/src/main/java/com/winlator/studio/StudioInstaller.java
+@@ -0,0 +1,334 @@
++package com.winlator.studio;
++
++import android.os.StatFs;
++
++import com.winlator.container.Container;
++import com.winlator.core.FileUtils;
++
++import org.json.JSONException;
++import org.json.JSONObject;
++
++import java.io.BufferedInputStream;
++import java.io.ByteArrayOutputStream;
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.nio.charset.StandardCharsets;
++import java.security.MessageDigest;
++import java.util.ArrayList;
++import java.util.Enumeration;
++import java.util.Iterator;
++import java.util.LinkedHashMap;
++import java.util.Locale;
++import java.util.Map;
++import java.util.zip.ZipEntry;
++import java.util.zip.ZipFile;
++
++/**
++ * Downloads Roblox Studio from Roblox's official deployment CDN into a container,
++ * laid out the same way the official RobloxStudioInstaller.exe lays it out.
++ * Nothing from Roblox is bundled in the APK.
++ */
++public final class StudioInstaller {
++    public static final String VERSION_URL = "https://clientsettingscdn.roblox.com/v2/client-version/WindowsStudio64";
++    public static final String[] MIRRORS = {"https://setup.rbxcdn.com", "https://roblox-setup.cachefly.net"};
++    public static final String INSTALL_DIR = ".wine/drive_c/Program Files/Roblox Studio";
++    public static final String EXECUTABLE = "RobloxStudioBeta.exe";
++    public static final String EXTRA_GUID = "studioGuid";
++    public static final String EXTRA_VERSION = "studioVersion";
++    private static final int MAX_ATTEMPTS = 3;
++    private static final String APP_SETTINGS =
++        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n" +
++        "<Settings>\r\n" +
++        "        <ContentFolder>content</ContentFolder>\r\n" +
++        "        <BaseUrl>http://www.roblox.com</BaseUrl>\r\n" +
++        "</Settings>\r\n";
++
++    // Used only if the map can't be read from the official installer (taken from Studio 0.742).
++    private static final String[][] FALLBACK_PACKAGE_DIRS = {
++        {"ApplicationConfig.zip", "ApplicationConfig/"}, {"redist.zip", ""}, {"RobloxStudio.zip", ""},
++        {"Libraries.zip", ""}, {"LibrariesQt5.zip", ""}, {"WebView2.zip", ""},
++        {"content-avatar.zip", "content/avatar/"}, {"content-configs.zip", "content/configs/"},
++        {"content-fonts.zip", "content/fonts/"}, {"content-sky.zip", "content/sky/"},
++        {"content-sounds.zip", "content/sounds/"}, {"content-textures2.zip", "content/textures/"},
++        {"content-studio_svg_textures.zip", "content/studio_svg_textures/"}, {"content-models.zip", "content/models/"},
++        {"content-textures3.zip", "PlatformContent/pc/textures/"}, {"content-terrain.zip", "PlatformContent/pc/terrain/"},
++        {"content-platform-fonts.zip", "PlatformContent/pc/fonts/"},
++        {"content-platform-dictionaries.zip", "PlatformContent/pc/shared_compression_dictionaries/"},
++        {"content-qt_translations.zip", "content/qt_translations/"}, {"content-api-docs.zip", "content/api_docs/"},
++        {"extracontent-scripts.zip", "ExtraContent/scripts/"}, {"extracontent-luapackages.zip", "ExtraContent/LuaPackages/"},
++        {"extracontent-translations.zip", "ExtraContent/translations/"}, {"extracontent-models.zip", "ExtraContent/models/"},
++        {"extracontent-textures.zip", "ExtraContent/textures/"}, {"studiocontent-models.zip", "StudioContent/models/"},
++        {"studiocontent-textures.zip", "StudioContent/textures/"}, {"shaders.zip", "shaders/"},
++        {"BuiltInPlugins.zip", "BuiltInPlugins/"}, {"BuiltInStandalonePlugins.zip", "BuiltInStandalonePlugins/"},
++        {"Plugins.zip", "Plugins/"}, {"StudioFonts.zip", "StudioFonts/"}, {"ssl.zip", "ssl/"},
++        {"WebView2RuntimeInstaller.zip", "WebView2RuntimeInstaller/"}
++    };
++
++    public interface Listener {
++        void onStatus(String text);
++        void onProgress(int percent);
++    }
++
++    public static final class Version {
++        public final String version;
++        public final String guid;
++
++        Version(String version, String guid) {
++            this.version = version;
++            this.guid = guid;
++        }
++    }
++
++    private static final class Package {
++        final String name;
++        final String md5;
++        final long packedSize;
++        final long size;
++
++        Package(String name, String md5, long packedSize, long size) {
++            this.name = name;
++            this.md5 = md5;
++            this.packedSize = packedSize;
++            this.size = size;
++        }
++    }
++
++    private StudioInstaller() {}
++
++    public static File getInstallDir(Container container) {
++        return new File(container.getRootDir(), INSTALL_DIR);
++    }
++
++    public static File getExecutable(Container container) {
++        return new File(getInstallDir(container), EXECUTABLE);
++    }
++
++    public static boolean isInstalled(Container container) {
++        return getExecutable(container).isFile() && !container.getExtra(EXTRA_GUID).isEmpty();
++    }
++
++    public static boolean isUpToDate(Container container, Version latest) {
++        return isInstalled(container) && container.getExtra(EXTRA_GUID).equals(latest.guid);
++    }
++
++    public static Version fetchLatestVersion() throws IOException, JSONException {
++        JSONObject data = new JSONObject(new String(get(VERSION_URL), StandardCharsets.UTF_8));
++        return new Version(data.getString("version"), data.getString("clientVersionUpload"));
++    }
++
++    public static void install(Container container, Version version, File tempDir, Listener listener) throws Exception {
++        listener.onStatus("Contacting Roblox servers…");
++        String mirror = null;
++        ArrayList<Package> packages = null;
++        for (String candidate : MIRRORS) {
++            try {
++                packages = parseManifest(get(packageUrl(candidate, version, "rbxPkgManifest.txt")));
++                mirror = candidate;
++                break;
++            }
++            catch (IOException e) {}
++        }
++        if (mirror == null) throw new IOException("Could not reach the Roblox download servers");
++
++        Map<String, String> packageDirs = fetchPackageDirectories(mirror, version);
++
++        long totalPacked = 0, totalSize = 0, largestPacked = 0;
++        for (Package pkg : packages) {
++            totalPacked += pkg.packedSize;
++            totalSize += pkg.size;
++            largestPacked = Math.max(largestPacked, pkg.packedSize);
++        }
++
++        File installDir = new File(container.getRootDir(), INSTALL_DIR);
++        File stagingDir = new File(installDir.getPath()+".new");
++        FileUtils.delete(stagingDir);
++        if (!stagingDir.mkdirs()) throw new IOException("Could not create "+stagingDir);
++
++        long required = totalSize + largestPacked + (256L << 20);
++        long available = new StatFs(stagingDir.getPath()).getAvailableBytes();
++        if (available < required) {
++            FileUtils.delete(stagingDir);
++            throw new IOException(String.format(Locale.ENGLISH, "Not enough free storage: need %.1f GB, have %.1f GB", required / 1e9, available / 1e9));
++        }
++
++        tempDir.mkdirs();
++        long[] doneBytes = {0};
++        final long total = totalPacked;
++        int index = 0;
++        for (Package pkg : packages) {
++            index++;
++            String subdir = packageDirs.get(pkg.name);
++            if (subdir == null) continue;
++
++            listener.onStatus(String.format(Locale.ENGLISH, "Downloading Roblox Studio %s (%d/%d)\n%s", version.version, index, packages.size(), pkg.name));
++            File zipFile = new File(tempDir, pkg.name);
++            long base = doneBytes[0];
++            downloadVerified(packageUrl(mirror, version, pkg.name), zipFile, pkg.md5, (bytes) -> {
++                listener.onProgress((int)((base + bytes) * 100 / Math.max(total, 1)));
++            });
++            doneBytes[0] = base + pkg.packedSize;
++
++            extract(zipFile, new File(stagingDir, subdir));
++            zipFile.delete();
++        }
++
++        FileUtils.writeString(new File(stagingDir, "AppSettings.xml"), APP_SETTINGS);
++
++        listener.onStatus("Finishing installation…");
++        FileUtils.delete(installDir);
++        if (!stagingDir.renameTo(installDir)) throw new IOException("Could not move Studio into place");
++
++        container.putExtra(EXTRA_GUID, version.guid);
++        container.putExtra(EXTRA_VERSION, version.version);
++        container.saveData();
++        listener.onProgress(100);
++    }
++
++    private static String packageUrl(String mirror, Version version, String name) {
++        return mirror+"/channel/common/"+version.guid+"-"+name;
++    }
++
++    private static ArrayList<Package> parseManifest(byte[] data) throws IOException {
++        String[] lines = new String(data, StandardCharsets.UTF_8).trim().split("\\s+");
++        if (lines.length < 5 || !lines[0].equals("v0")) throw new IOException("Unexpected package manifest format");
++        ArrayList<Package> packages = new ArrayList<>();
++        for (int i = 1; i + 3 < lines.length; i += 4) {
++            packages.add(new Package(lines[i], lines[i+1], Long.parseLong(lines[i+2]), Long.parseLong(lines[i+3])));
++        }
++        return packages;
++    }
++
++    /** Reads the package -> folder map embedded in the official installer, like Vinegar/Bloxstrap do. */
++    private static Map<String, String> fetchPackageDirectories(String mirror, Version version) {
++        try {
++            Map<String, String> dirs = scanPackageDirectories(get(packageUrl(mirror, version, "RobloxStudioInstaller.exe")));
++            if (dirs != null && dirs.containsKey("RobloxStudio.zip")) return dirs;
++        }
++        catch (IOException e) {}
++
++        LinkedHashMap<String, String> dirs = new LinkedHashMap<>();
++        for (String[] entry : FALLBACK_PACKAGE_DIRS) dirs.put(entry[0], entry[1]);
++        return dirs;
++    }
++
++    static Map<String, String> scanPackageDirectories(byte[] b) {
++        for (int i = 1; i < b.length - 1; i++) {
++            if (b[i] != '{' || b[i+1] != '"' || b[i-1] != 0) continue;
++            int end = i;
++            while (end < b.length && b[end] != 0 && end - i < 16384) end++;
++            if (end >= b.length || b[end] != 0 || b[end-1] != '}') continue;
++            try {
++                JSONObject json = new JSONObject(new String(b, i, end - i, StandardCharsets.UTF_8));
++                LinkedHashMap<String, String> dirs = new LinkedHashMap<>();
++                for (Iterator<String> it = json.keys(); it.hasNext(); ) {
++                    String key = it.next();
++                    dirs.put(key, json.getString(key).replace('\\', '/'));
++                }
++                for (String key : dirs.keySet()) if (key.endsWith(".zip")) return dirs;
++            }
++            catch (JSONException e) {}
++        }
++        return null;
++    }
++
++    private interface ByteProgress {
++        void call(long bytes);
++    }
++
++    private static void downloadVerified(String url, File destination, String md5, ByteProgress progress) throws Exception {
++        IOException lastError = null;
++        for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
++            try {
++                MessageDigest digest = MessageDigest.getInstance("MD5");
++                HttpURLConnection connection = open(url);
++                try (InputStream in = new BufferedInputStream(connection.getInputStream(), 65536);
++                     OutputStream out = new FileOutputStream(destination)) {
++                    byte[] buffer = new byte[65536];
++                    long done = 0, lastReported = 0;
++                    int read;
++                    while ((read = in.read(buffer)) != -1) {
++                        out.write(buffer, 0, read);
++                        digest.update(buffer, 0, read);
++                        done += read;
++                        if (done - lastReported >= (1 << 20)) {
++                            progress.call(done);
++                            lastReported = done;
++                        }
++                    }
++                }
++                finally {
++                    connection.disconnect();
++                }
++
++                if (toHex(digest.digest()).equalsIgnoreCase(md5)) return;
++                lastError = new IOException("Checksum mismatch for "+destination.getName());
++            }
++            catch (IOException e) {
++                lastError = e;
++            }
++            destination.delete();
++        }
++        throw lastError;
++    }
++
++    private static void extract(File zipFile, File destination) throws IOException {
++        String root = destination.getCanonicalPath() + File.separator;
++        try (ZipFile zip = new ZipFile(zipFile)) {
++            Enumeration<? extends ZipEntry> entries = zip.entries();
++            byte[] buffer = new byte[65536];
++            while (entries.hasMoreElements()) {
++                ZipEntry entry = entries.nextElement();
++                String name = entry.getName().replace('\\', '/');
++                File file = new File(destination, name);
++                if (!file.getCanonicalPath().startsWith(root)) throw new IOException("Bad entry in "+zipFile.getName()+": "+name);
++                if (entry.isDirectory() || name.endsWith("/")) {
++                    file.mkdirs();
++                    continue;
++                }
++                file.getParentFile().mkdirs();
++                try (InputStream in = zip.getInputStream(entry); OutputStream out = new FileOutputStream(file)) {
++                    int read;
++                    while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
++                }
++            }
++        }
++    }
++
++    private static HttpURLConnection open(String url) throws IOException {
++        HttpURLConnection connection = (HttpURLConnection)new URL(url).openConnection();
++        connection.setConnectTimeout(30000);
++        connection.setReadTimeout(60000);
++        connection.setInstanceFollowRedirects(true);
++        int code = connection.getResponseCode();
++        if (code != HttpURLConnection.HTTP_OK) {
++            connection.disconnect();
++            throw new IOException("HTTP "+code+" for "+url);
++        }
++        return connection;
++    }
++
++    private static byte[] get(String url) throws IOException {
++        HttpURLConnection connection = open(url);
++        try (InputStream in = connection.getInputStream()) {
++            ByteArrayOutputStream out = new ByteArrayOutputStream();
++            byte[] buffer = new byte[65536];
++            int read;
++            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
++            return out.toByteArray();
++        }
++        finally {
++            connection.disconnect();
++        }
++    }
++
++    private static String toHex(byte[] bytes) {
++        StringBuilder sb = new StringBuilder();
++        for (byte b : bytes) sb.append(String.format(Locale.ENGLISH, "%02x", b));
++        return sb.toString();
++    }
++}
+diff --git a/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java b/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java
+new file mode 100644
+index 0000000..19d47be
+--- /dev/null
++++ b/app/src/main/java/com/winlator/studio/StudioLauncherActivity.java
+@@ -0,0 +1,318 @@
++package com.winlator.studio;
++
++import android.Manifest;
++import android.content.Intent;
++import android.content.pm.PackageManager;
++import android.os.Bundle;
++import android.view.View;
++import android.widget.Button;
++import android.widget.ProgressBar;
++import android.widget.TextView;
++
++import androidx.annotation.NonNull;
++import androidx.appcompat.app.AppCompatActivity;
++import androidx.core.app.ActivityCompat;
++import androidx.core.content.ContextCompat;
++
++import com.winlator.MainActivity;
++import com.winlator.R;
++import com.winlator.XServerDisplayActivity;
++import com.winlator.box64.Box64Preset;
++import com.winlator.container.Container;
++import com.winlator.container.ContainerManager;
++import com.winlator.container.GraphicsDrivers;
++import com.winlator.core.AppUtils;
++import com.winlator.xenvironment.RootFS;
++import com.winlator.xenvironment.RootFSInstaller;
++
++import org.json.JSONException;
++import org.json.JSONObject;
++
++import java.io.File;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++
++/**
++ * Entry point of the app: installs the Wine/Box64 environment, creates a container for
++ * Roblox Studio, downloads Studio from Roblox's CDN (first launch / updates) and starts it.
++ */
++public class StudioLauncherActivity extends AppCompatActivity {
++    private static final int PERMISSION_REQUEST_CODE = 1;
++    private static final String EXTRA_STUDIO_CONTAINER = "robloxStudio";
++    private static final String AUTH_SCHEME = "roblox-studio-auth";
++    private final ExecutorService executor = Executors.newSingleThreadExecutor();
++    private TextView tvStatus;
++    private TextView tvProgress;
++    private ProgressBar pbProgress;
++    private Button btLaunch;
++    private Button btRetry;
++    private Button btReinstall;
++    private String pendingExecArgs;
++    private boolean forceReinstall = false;
++    private boolean busy = false;
++
++    @Override
++    protected void onCreate(Bundle savedInstanceState) {
++        AppUtils.setActivityTheme(this);
++        super.onCreate(savedInstanceState);
++
++        Intent intent = getIntent();
++        boolean isAppRestart = (intent.getFlags() & Intent.FLAG_ACTIVITY_CLEAR_TASK) != 0 && intent.getData() == null;
++        if (isAppRestart && !intent.hasExtra("container_id")) {
++            // Winlator restarted itself (settings change, Wine install, ...): go back to its UI.
++            openWinlator(intent.getExtras());
++            return;
++        }
++
++        setContentView(R.layout.studio_launcher_activity);
++        tvStatus = findViewById(R.id.TVStatus);
++        tvProgress = findViewById(R.id.TVProgress);
++        pbProgress = findViewById(R.id.PBProgress);
++        btLaunch = findViewById(R.id.BTLaunch);
++        btRetry = findViewById(R.id.BTRetry);
++        btReinstall = findViewById(R.id.BTReinstall);
++
++        btLaunch.setOnClickListener((v) -> start());
++        btRetry.setOnClickListener((v) -> start());
++        btReinstall.setOnClickListener((v) -> {
++            forceReinstall = true;
++            start();
++        });
++        findViewById(R.id.BTAdvanced).setOnClickListener((v) -> openWinlator(null));
++
++        String authUri = getAuthUri(intent);
++        if (authUri != null) {
++            handleAuthCallback(authUri);
++        }
++        else if (isAppRestart) {
++            // Studio was closed: don't relaunch it automatically.
++            showIdle("Roblox Studio was closed.");
++        }
++        else start();
++    }
++
++    @Override
++    protected void onNewIntent(Intent intent) {
++        super.onNewIntent(intent);
++        String authUri = getAuthUri(intent);
++        if (authUri != null) handleAuthCallback(authUri);
++    }
++
++    @Override
++    protected void onDestroy() {
++        executor.shutdownNow();
++        super.onDestroy();
++    }
++
++    private static String getAuthUri(Intent intent) {
++        if (intent == null || intent.getData() == null) return null;
++        return AUTH_SCHEME.equalsIgnoreCase(intent.getData().getScheme()) ? intent.getDataString() : null;
++    }
++
++    /**
++     * "Login via Browser" in Studio opens the Android browser; after logging in, the website
++     * redirects to roblox-studio-auth:..., which Android delivers here. Like on Windows, the
++     * callback is passed as an argument to RobloxStudioBeta.exe, which forwards it to the
++     * running Studio instance.
++     */
++    private void handleAuthCallback(String authUri) {
++        String quoted = "\""+authUri.replace("\"", "%22")+"\"";
++        if (XServerDisplayActivity.isSessionRunning()) {
++            Intent intent = new Intent(this, XServerDisplayActivity.class);
++            intent.putExtra("extra_exec_path", "C:\\Program Files\\Roblox Studio\\"+StudioInstaller.EXECUTABLE);
++            intent.putExtra("extra_exec_args", quoted);
++            startActivity(intent);
++            finish();
++        }
++        else {
++            pendingExecArgs = quoted;
++            start();
++        }
++    }
++
++    private void start() {
++        if (busy) return;
++        if (XServerDisplayActivity.isSessionRunning()) {
++            // Studio is already running (and must not be updated underneath it): just show it.
++            startActivity(new Intent(this, XServerDisplayActivity.class));
++            finish();
++            return;
++        }
++        busy = true;
++        showBusy("Preparing…");
++        if (requestPermissionsIfNeeded()) return;
++        installRootFS();
++    }
++
++    private boolean requestPermissionsIfNeeded() {
++        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
++            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) return false;
++
++        ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE}, PERMISSION_REQUEST_CODE);
++        return true;
++    }
++
++    @Override
++    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
++        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
++        if (requestCode != PERMISSION_REQUEST_CODE) return;
++        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
++            installRootFS();
++        }
++        else showError(getString(R.string.studio_storage_permission));
++    }
++
++    private void installRootFS() {
++        showBusy("Installing the Windows environment (Wine + Box64)…");
++        RootFSInstaller.installIfNeeded(this, () -> {
++            if (!RootFS.find(this).isValid()) {
++                showError(getString(R.string.unable_to_install_system_files));
++                return;
++            }
++            ensureContainer();
++        });
++    }
++
++    private void ensureContainer() {
++        ContainerManager manager = new ContainerManager(this);
++        for (Container container : manager.getContainers()) {
++            if (container.getExtra(EXTRA_STUDIO_CONTAINER).equals("1")) {
++                ensureStudio(container);
++                return;
++            }
++        }
++
++        showBusy("Creating the Roblox Studio container…");
++        JSONObject data = new JSONObject();
++        try {
++            data.put("name", "Roblox Studio");
++            data.put("screenSize", Container.DEFAULT_SCREEN_SIZE);
++            data.put("envVars", Container.DEFAULT_ENV_VARS);
++            data.put("graphicsDriver", GraphicsDrivers.getDefaultDriver(this));
++            // Studio needs Direct3D 11: DXVK translates it to Vulkan (Turnip on Adreno, Vortek elsewhere).
++            data.put("dxwrapper", Container.DEFAULT_DXWRAPPER);
++            data.put("wincomponents", Container.DEFAULT_WINCOMPONENTS);
++            data.put("drives", Container.DEFAULT_DRIVES);
++            data.put("startupSelection", Container.STARTUP_SELECTION_ESSENTIAL);
++            // Studio is heavily multi-threaded: keep strong memory ordering on ARM.
++            data.put("box64Preset", Box64Preset.CONSERVATIVE);
++        }
++        catch (JSONException e) {}
++
++        manager.createContainerAsync(data, (container) -> {
++            if (container == null) {
++                showError("Could not create the Roblox Studio container.");
++                return;
++            }
++            container.putExtra(EXTRA_STUDIO_CONTAINER, "1");
++            container.saveData();
++            ensureStudio(container);
++        });
++    }
++
++    private void ensureStudio(final Container container) {
++        showBusy("Checking for the latest Roblox Studio…");
++        final boolean reinstall = forceReinstall;
++        forceReinstall = false;
++        executor.execute(() -> {
++            StudioInstaller.Version latest;
++            try {
++                latest = StudioInstaller.fetchLatestVersion();
++            }
++            catch (Exception e) {
++                if (StudioInstaller.isInstalled(container) && !reinstall) {
++                    runOnUiThread(() -> launch(container));
++                }
++                else runOnUiThread(() -> showError("Could not reach Roblox to download Studio. Check your internet connection.\n\n"+e.getMessage()));
++                return;
++            }
++
++            if (!reinstall && StudioInstaller.isUpToDate(container, latest)) {
++                runOnUiThread(() -> launch(container));
++                return;
++            }
++
++            try {
++                StudioInstaller.install(container, latest, new File(getCacheDir(), "studio-download"), new StudioInstaller.Listener() {
++                    @Override
++                    public void onStatus(String text) {
++                        runOnUiThread(() -> tvStatus.setText(text));
++                    }
++
++                    @Override
++                    public void onProgress(int percent) {
++                        runOnUiThread(() -> setProgress(percent));
++                    }
++                });
++                runOnUiThread(() -> launch(container));
++            }
++            catch (Exception e) {
++                runOnUiThread(() -> showError("Roblox Studio could not be installed:\n"+e.getMessage()));
++            }
++        });
++    }
++
++    private void launch(Container container) {
++        busy = false;
++        File executable = StudioInstaller.getExecutable(container);
++        if (!executable.isFile()) {
++            showError("Roblox Studio is not installed.");
++            return;
++        }
++
++        String version = container.getExtra(StudioInstaller.EXTRA_VERSION);
++        tvStatus.setText("Starting Roblox Studio "+version+"…");
++        Intent intent = new Intent(this, XServerDisplayActivity.class);
++        intent.putExtra("container_id", container.id);
++        intent.putExtra("exec_path", executable.getPath());
++        if (pendingExecArgs != null) intent.putExtra("exec_args", pendingExecArgs);
++        pendingExecArgs = null;
++        startActivity(intent);
++        finish();
++    }
++
++    private void openWinlator(Bundle extras) {
++        Intent intent = new Intent(this, MainActivity.class);
++        if (extras != null) intent.putExtras(extras);
++        startActivity(intent);
++        finish();
++    }
++
++    private void showBusy(String status) {
++        tvStatus.setText(status);
++        pbProgress.setIndeterminate(true);
++        pbProgress.setVisibility(View.VISIBLE);
++        tvProgress.setVisibility(View.GONE);
++        btLaunch.setVisibility(View.GONE);
++        btRetry.setVisibility(View.GONE);
++        btReinstall.setVisibility(View.GONE);
++        AppUtils.keepScreenOn(this);
++    }
++
++    private void setProgress(int percent) {
++        pbProgress.setIndeterminate(false);
++        pbProgress.setProgress(percent);
++        tvProgress.setVisibility(View.VISIBLE);
++        tvProgress.setText(percent+"%");
++    }
++
++    private void showIdle(String status) {
++        busy = false;
++        tvStatus.setText(status);
++        pbProgress.setVisibility(View.GONE);
++        tvProgress.setVisibility(View.GONE);
++        btLaunch.setVisibility(View.VISIBLE);
++        btRetry.setVisibility(View.GONE);
++        btReinstall.setVisibility(View.VISIBLE);
++    }
++
++    private void showError(String message) {
++        busy = false;
++        tvStatus.setText(message);
++        pbProgress.setVisibility(View.GONE);
++        tvProgress.setVisibility(View.GONE);
++        btLaunch.setVisibility(View.GONE);
++        btRetry.setVisibility(View.VISIBLE);
++        btReinstall.setVisibility(View.GONE);
++    }
++}
+diff --git a/app/src/main/java/com/winlator/xenvironment/RootFSInstaller.java b/app/src/main/java/com/winlator/xenvironment/RootFSInstaller.java
+index 08fbf80..a2dc088 100644
+--- a/app/src/main/java/com/winlator/xenvironment/RootFSInstaller.java
++++ b/app/src/main/java/com/winlator/xenvironment/RootFSInstaller.java
+@@ -45,6 +45,10 @@ public abstract class RootFSInstaller {
+     }
+ 
+     public static void install(final MainActivity activity) {
++        install(activity, null);
++    }
++
++    public static void install(final AppCompatActivity activity, final Runnable onComplete) {
+         AppUtils.keepScreenOn(activity);
+         RootFS rootFS = RootFS.find(activity);
+         final File rootDir = rootFS.getRootDir();
+@@ -74,12 +78,19 @@ public abstract class RootFSInstaller {
+             else AppUtils.showToast(activity, R.string.unable_to_install_system_files);
+ 
+             dialog.closeOnUiThread();
++            if (onComplete != null) activity.runOnUiThread(onComplete);
+         });
+     }
+ 
+     public static void installIfNeeded(final MainActivity activity) {
++        installIfNeeded(activity, null);
++    }
++
++    /** Installs the rootfs if needed, then runs onComplete on the UI thread (also when nothing had to be installed). */
++    public static void installIfNeeded(final AppCompatActivity activity, final Runnable onComplete) {
+         RootFS rootFS = RootFS.find(activity);
+-        if (!rootFS.isValid() || rootFS.getVersion() < LATEST_VERSION) install(activity);
++        if (!rootFS.isValid() || rootFS.getVersion() < LATEST_VERSION) install(activity, onComplete);
++        else if (onComplete != null) onComplete.run();
+     }
+ 
+     private static void clearOptDir(File optDir) {
+diff --git a/app/src/main/res/layout/studio_launcher_activity.xml b/app/src/main/res/layout/studio_launcher_activity.xml
+new file mode 100644
+index 0000000..75850ea
+--- /dev/null
++++ b/app/src/main/res/layout/studio_launcher_activity.xml
+@@ -0,0 +1,93 @@
++<?xml version="1.0" encoding="utf-8"?>
++<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:fillViewport="true">
++
++    <LinearLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:orientation="vertical"
++        android:gravity="center"
++        android:padding="24dp">
++
++        <ImageView
++            android:layout_width="96dp"
++            android:layout_height="96dp"
++            android:src="@mipmap/ic_launcher"
++            android:layout_marginBottom="16dp" />
++
++        <TextView
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:text="@string/app_name"
++            android:textSize="24dp"
++            android:textStyle="bold"
++            android:textColor="?attr/colorPrimaryText"
++            android:layout_marginBottom="8dp" />
++
++        <TextView
++            android:id="@+id/TVStatus"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:gravity="center"
++            android:textSize="16dp"
++            android:textColor="?attr/colorPrimaryText"
++            android:layout_marginBottom="16dp" />
++
++        <ProgressBar
++            android:id="@+id/PBProgress"
++            style="@android:style/Widget.Material.ProgressBar.Horizontal"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:max="100"
++            android:visibility="gone"
++            android:layout_marginBottom="8dp" />
++
++        <TextView
++            android:id="@+id/TVProgress"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:textColor="?attr/colorPrimaryText"
++            android:visibility="gone"
++            android:layout_marginBottom="16dp" />
++
++        <Button
++            android:id="@+id/BTLaunch"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:text="@string/studio_launch"
++            android:visibility="gone" />
++
++        <Button
++            android:id="@+id/BTRetry"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:text="@string/studio_retry"
++            android:visibility="gone" />
++
++        <Button
++            android:id="@+id/BTReinstall"
++            style="?android:attr/borderlessButtonStyle"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:text="@string/studio_reinstall"
++            android:visibility="gone" />
++
++        <Button
++            android:id="@+id/BTAdvanced"
++            style="?android:attr/borderlessButtonStyle"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:text="@string/studio_advanced" />
++
++        <TextView
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:gravity="center"
++            android:textSize="12dp"
++            android:textColor="?attr/colorSecondaryText"
++            android:layout_marginTop="16dp"
++            android:text="@string/studio_footer" />
++    </LinearLayout>
++</ScrollView>
+diff --git a/app/src/main/res/values-pt/strings.xml b/app/src/main/res/values-pt/strings.xml
+index e2d342c..fa901ec 100644
+--- a/app/src/main/res/values-pt/strings.xml
++++ b/app/src/main/res/values-pt/strings.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="app_name">Winlator</string>
++    <string name="app_name">Roblox Studio Mobile</string>
+     <string name="run">Executar</string>
+     <string name="edit">Editar</string>
+     <string name="remove">Remover</string>
+diff --git a/app/src/main/res/values-ru/strings.xml b/app/src/main/res/values-ru/strings.xml
+index 3475814..77b3deb 100644
+--- a/app/src/main/res/values-ru/strings.xml
++++ b/app/src/main/res/values-ru/strings.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="app_name">Winlator</string>
++    <string name="app_name">Roblox Studio Mobile</string>
+     <string name="run">Запустить</string>
+     <string name="edit">Редактировать</string>
+     <string name="remove">Удалить</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index e943712..d173d2c 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="app_name">Winlator</string>
++    <string name="app_name">Roblox Studio Mobile</string>
+     <string name="run">Run</string>
+     <string name="edit">Edit</string>
+     <string name="remove">Remove</string>
+diff --git a/app/src/main/res/values/strings_studio.xml b/app/src/main/res/values/strings_studio.xml
+new file mode 100644
+index 0000000..1708a6e
+--- /dev/null
++++ b/app/src/main/res/values/strings_studio.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <string name="studio_launch">Launch Roblox Studio</string>
++    <string name="studio_retry">Retry</string>
++    <string name="studio_reinstall">Re-download Roblox Studio</string>
++    <string name="studio_advanced">Winlator settings (advanced)</string>
++    <string name="studio_footer">Runs the Windows version of Roblox Studio with Wine and Box64 (based on Winlator, LGPL-2.1). Studio itself is downloaded from Roblox\'s official servers on first launch and is not included in this app.</string>
++    <string name="studio_storage_permission">Storage permission is needed to install the Windows environment.</string>
++</resources>
