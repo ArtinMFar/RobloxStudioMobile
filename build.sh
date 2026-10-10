@@ -28,7 +28,9 @@ git -C "$SRC" apply "$ROOT"/patches/*.patch
 if [ -f "$ROOT/keystore.properties" ]; then cp "$ROOT/keystore.properties" "$SRC/keystore.properties"; fi
 if [ -n "${ANDROID_HOME:-}" ]; then echo "sdk.dir=$ANDROID_HOME" > "$SRC/local.properties"; fi
 
-(cd "$SRC" && chmod +x gradlew && ./gradlew --no-daemon assembleRelease)
+# gradle/maven-mirror.gradle routes Maven Central through Google's mirror (repo.maven.apache.org
+# rate-limits some cloud machines with HTTP 429).
+(cd "$SRC" && chmod +x gradlew && ./gradlew --no-daemon --init-script "$ROOT/gradle/maven-mirror.gradle" assembleRelease)
 
 mkdir -p "$ROOT/apk"
 OUT="$SRC/app/build/outputs/apk/release"

@@ -12,8 +12,8 @@ Wine, Box64, DXVK and the Turnip/Vortek Vulkan drivers into an Android app.
 ## Download & install
 
 - APK: [`apk/RobloxStudioMobile.apk`](apk/RobloxStudioMobile.apk) (≈156 MB, stored with Git LFS —
-  use GitHub's "Download raw file" button). Version `11.2-studio7`, arm64-v8a only.
-- SHA-256: `294e7a69844750ca9f43d66596c4ae2337ab2790045f46ab9415240ae5395081`
+  use GitHub's "Download raw file" button). Version `11.2-studio8`, arm64-v8a only.
+- SHA-256: `4f0c45192d176bbf141b17deb78687728df68155e2914397926efc0e0cfa72cc`
 - Signing certificate SHA-256: `f7e1905ea92f6341e4d585f5514f7d0a17e36a2c18e5425e5f5cb0617e4c1e69`
   (personal key; the keystore and its password are not in this repo).
 
@@ -64,6 +64,8 @@ of relaunching straight away.
 
 ## Building
 
+See also [HANDOFF.md](HANDOFF.md) for continuing work in a new session.
+
 ```
 ANDROID_HOME=/path/to/sdk ./build.sh
 ```
@@ -108,6 +110,10 @@ emulator; it needs a real ARM64 phone.
   drawable too: copying a rectangle larger than the source read past its buffer (second S25 Ultra
   crash, right after login); 1-bit images and cursor masks are bounded as well. `tests/drawable/run.sh` reproduces the crash scenario on the
   host with Winlator's real native code and checks the fix.
+- `DrawRequests.copyArea` / `GLRenderer` — a CopyArea from an offscreen GPU window (a Direct3D/
+  Vulkan child window) into part of a window is drawn as a positioned overlay. Winlator used to
+  replace the whole window's texture with the child's, which stretched Studio's 29-pixel top bar
+  over the entire window and made it flicker with the start page.
 - `AppUtils.restartApplication` — ends the process with `killProcess` instead of `Runtime.exit`, which
   could SIGSEGV while the X server/audio/renderer threads were still running.
 - `RootFSInstaller` — completion callback; `AndroidManifest` — new launcher + `roblox-studio-auth`

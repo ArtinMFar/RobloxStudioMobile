@@ -1,0 +1,14 @@
+// repo.maven.apache.org is rate-limiting (429) from this machine: use Google's Maven Central mirror.
+def mirror = 'https://maven-central.storage-download.googleapis.com/maven2/'
+def redirect = { RepositoryHandler repos ->
+    repos.all { repo ->
+        if (repo instanceof MavenArtifactRepository && repo.url.toString().startsWith('https://repo.maven.apache.org/maven2')) {
+            repo.url = mirror
+        }
+    }
+}
+settingsEvaluated { settings -> redirect(settings.pluginManagement.repositories) }
+allprojects {
+    buildscript { redirect(repositories) }
+    redirect(repositories)
+}

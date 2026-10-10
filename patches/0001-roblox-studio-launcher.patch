@@ -13,7 +13,7 @@ index f7415cf..ba0375d 100644
 +*.jks
 +*.keystore
 diff --git a/app/build.gradle b/app/build.gradle
-index 7690275..3b6aa17 100644
+index 7690275..2a4b950 100644
 --- a/app/build.gradle
 +++ b/app/build.gradle
 @@ -1,5 +1,11 @@
@@ -34,8 +34,8 @@ index 7690275..3b6aa17 100644
          targetSdkVersion 28
 -        versionCode 33
 -        versionName "11.2"
-+        versionCode 39
-+        versionName "11.2-studio7"
++        versionCode 40
++        versionName "11.2-studio8"
 +    }
 +
 +    signingConfigs {
@@ -256,6 +256,45 @@ index b503fc0..3906563 100644
 +        }
      }
  }
+diff --git a/app/src/main/java/com/winlator/renderer/GLRenderer.java b/app/src/main/java/com/winlator/renderer/GLRenderer.java
+index 48a8344..77d07e1 100644
+--- a/app/src/main/java/com/winlator/renderer/GLRenderer.java
++++ b/app/src/main/java/com/winlator/renderer/GLRenderer.java
+@@ -240,10 +240,11 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+         windowMaterial.setUniformVec2(windowMaterial.uniforms.viewSize, xServer.screenInfo.width, xServer.screenInfo.height);
+         quadVertices.bind(windowMaterial.programId);
+ 
+-        try (XLock lock = xServer.lock(XServer.Lockable.DRAWABLE_MANAGER)) {
++        try (XLock lock = xServer.lock(XServer.Lockable.WINDOW_MANAGER, XServer.Lockable.DRAWABLE_MANAGER)) {
+             for (RenderableWindow window : renderableWindows) {
+                 if (!window.content.isOffscreenStorage()) {
+                     renderWindowDrawable(window.content, window.rootX, window.rootY, window.transparent, window.fullscreenTransformation);
++                    if (window.fullscreenTransformation == null) renderOverlays(window);
+                 }
+             }
+         }
+@@ -251,6 +252,21 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+         quadVertices.disable();
+     }
+ 
++    /** GPU-rendered child windows copied into part of this window (see DrawRequests.copyArea). */
++    private void renderOverlays(RenderableWindow window) {
++        for (Drawable.Overlay overlay : window.content.getOverlays()) {
++            Drawable source = overlay.source;
++            if (xServer.drawableManager.getDrawable(source.id) != source) {
++                // Destroyed or replaced (resized windows get a new drawable).
++                window.content.removeOverlay(overlay);
++                continue;
++            }
++            Window sourceWindow = xServer.windowManager.getWindow(source.id);
++            if (sourceWindow != null && !sourceWindow.attributes.isViewable()) continue;
++            renderWindowDrawable(source, window.rootX + overlay.x, window.rootY + overlay.y, false, null);
++        }
++    }
++
+     private void renderCursor() {
+         cursorMaterial.use();
+         cursorMaterial.setUniformVec2(cursorMaterial.uniforms.viewSize, xServer.screenInfo.width, xServer.screenInfo.height);
 diff --git a/app/src/main/java/com/winlator/renderer/GPUImage.java b/app/src/main/java/com/winlator/renderer/GPUImage.java
 index 048f888..58f2da9 100644
 --- a/app/src/main/java/com/winlator/renderer/GPUImage.java
@@ -1789,10 +1828,10 @@ index 08fbf80..a2dc088 100644
  
      private static void clearOptDir(File optDir) {
 diff --git a/app/src/main/java/com/winlator/xserver/Drawable.java b/app/src/main/java/com/winlator/xserver/Drawable.java
-index 2680054..7f801e5 100644
+index 2680054..43a99f5 100644
 --- a/app/src/main/java/com/winlator/xserver/Drawable.java
 +++ b/app/src/main/java/com/winlator/xserver/Drawable.java
-@@ -18,6 +18,8 @@ public class Drawable extends XResource {
+@@ -18,11 +18,27 @@ public class Drawable extends XResource {
      public final Visual visual;
      private Texture texture = new Texture(this);
      private ByteBuffer data;
@@ -1801,7 +1840,26 @@ index 2680054..7f801e5 100644
      private boolean useSharedData;
      private Runnable onDrawListener;
      private boolean offscreenStorage = false;
-@@ -34,6 +36,7 @@ public class Drawable extends XResource {
+     private Callback<Drawable> onDestroyListener;
+     public final Object renderLock = new Object();
++    private final java.util.List<Overlay> overlays = new java.util.concurrent.CopyOnWriteArrayList<>();
++
++    /** GPU-rendered contents of another drawable, shown at (x, y) on top of this drawable's pixels. */
++    public static final class Overlay {
++        public final Drawable source;
++        public final short x;
++        public final short y;
++
++        private Overlay(Drawable source, short x, short y) {
++            this.source = source;
++            this.x = x;
++            this.y = y;
++        }
++    }
+ 
+     static {
+         System.loadLibrary("winlator");
+@@ -34,6 +50,7 @@ public class Drawable extends XResource {
          this.height = (short)height;
          this.visual = visual;
          this.data = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.LITTLE_ENDIAN);
@@ -1809,7 +1867,7 @@ index 2680054..7f801e5 100644
      }
  
      public static Drawable fromBitmap(Bitmap bitmap) {
-@@ -55,7 +58,10 @@ public class Drawable extends XResource {
+@@ -55,7 +72,10 @@ public class Drawable extends XResource {
      }
  
      public void setTexture(Texture texture) {
@@ -1821,7 +1879,7 @@ index 2680054..7f801e5 100644
          this.texture = texture;
      }
  
-@@ -65,11 +71,54 @@ public class Drawable extends XResource {
+@@ -65,11 +85,54 @@ public class Drawable extends XResource {
      }
  
      public void setData(ByteBuffer data) {
@@ -1877,7 +1935,7 @@ index 2680054..7f801e5 100644
      }
  
      public Runnable getOnDrawListener() {
-@@ -89,18 +138,30 @@ public class Drawable extends XResource {
+@@ -89,18 +152,30 @@ public class Drawable extends XResource {
      }
  
      public void drawImage(short srcX, short srcY, short dstX, short dstY, short width, short height, byte depth, ByteBuffer data, short totalWidth, short totalHeight) {
@@ -1916,7 +1974,7 @@ index 2680054..7f801e5 100644
          }
  
          this.data.rewind();
-@@ -117,8 +178,9 @@ public class Drawable extends XResource {
+@@ -117,8 +192,9 @@ public class Drawable extends XResource {
          y = (short)Mathf.clamp(y, 0, this.height-1);
          if ((x + width) > this.width) width = (short)(this.width - x);
          if ((y + height) > this.height) height = (short)(this.height - y);
@@ -1927,7 +1985,7 @@ index 2680054..7f801e5 100644
  
          this.data.rewind();
          dstData.rewind();
-@@ -130,17 +192,28 @@ public class Drawable extends XResource {
+@@ -130,17 +206,28 @@ public class Drawable extends XResource {
      }
  
      public void copyArea(short srcX, short srcY, short dstX, short dstY, short width, short height, Drawable drawable, GraphicsContext.Function gcFunction) {
@@ -1964,7 +2022,7 @@ index 2680054..7f801e5 100644
  
          this.data.rewind();
          drawable.data.rewind();
-@@ -153,6 +226,7 @@ public class Drawable extends XResource {
+@@ -153,6 +240,7 @@ public class Drawable extends XResource {
      }
  
      public void fillRect(int x, int y, int width, int height, int color) {
@@ -1972,7 +2030,7 @@ index 2680054..7f801e5 100644
          if (this.data == null) return;
          x = (short)Mathf.clamp(x, 0, this.width-1);
          y = (short)Mathf.clamp(y, 0, this.height-1);
-@@ -171,6 +245,7 @@ public class Drawable extends XResource {
+@@ -171,6 +259,7 @@ public class Drawable extends XResource {
      }
  
      public void drawLine(int x0, int y0, int x1, int y1, int color, int lineWidth) {
@@ -1980,7 +2038,7 @@ index 2680054..7f801e5 100644
          if (this.data == null) return;
          x0 = Mathf.clamp(x0, 0, width-lineWidth);
          y0 = Mathf.clamp(y0, 0, height-lineWidth);
-@@ -184,7 +259,10 @@ public class Drawable extends XResource {
+@@ -184,7 +273,10 @@ public class Drawable extends XResource {
      }
  
      public void drawAlphaMaskedBitmap(byte foreRed, byte foreGreen, byte foreBlue, byte backRed, byte backGreen, byte backBlue, Drawable srcDrawable, Drawable maskDrawable) {
@@ -1991,6 +2049,36 @@ index 2680054..7f801e5 100644
          drawAlphaMaskedBitmap(foreRed, foreGreen, foreBlue, backRed, backGreen, backBlue, srcDrawable.data, maskDrawable.data, this.data);
          this.data.rewind();
  
+@@ -198,6 +290,29 @@ public class Drawable extends XResource {
+         }
+     }
+ 
++    /**
++     * Shows source (an offscreen, GPU-only window such as a Direct3D/Vulkan child window) at (x, y)
++     * inside this drawable when rendering, at the source's own size.
++     */
++    public void setOverlay(Drawable source, short x, short y) {
++        for (Overlay overlay : overlays) {
++            if (overlay.source == source) {
++                if (overlay.x == x && overlay.y == y) return;
++                overlays.remove(overlay);
++                break;
++            }
++        }
++        overlays.add(new Overlay(source, x, y));
++    }
++
++    public void removeOverlay(Overlay overlay) {
++        overlays.remove(overlay);
++    }
++
++    public java.util.List<Overlay> getOverlays() {
++        return overlays;
++    }
++
+     public boolean isUseSharedData() {
+         return useSharedData;
+     }
 diff --git a/app/src/main/java/com/winlator/xserver/SHMSegmentManager.java b/app/src/main/java/com/winlator/xserver/SHMSegmentManager.java
 index cbd5d51..719dbfe 100644
 --- a/app/src/main/java/com/winlator/xserver/SHMSegmentManager.java
@@ -2118,6 +2206,32 @@ index 264c688..1c0d8bf 100644
              case ClientOpcodes.GET_CLIENT_POINTER:
                  getClientPointer(client, inputStream, outputStream);
                  break;
+diff --git a/app/src/main/java/com/winlator/xserver/requests/DrawRequests.java b/app/src/main/java/com/winlator/xserver/requests/DrawRequests.java
+index 1a490e2..6df3c13 100644
+--- a/app/src/main/java/com/winlator/xserver/requests/DrawRequests.java
++++ b/app/src/main/java/com/winlator/xserver/requests/DrawRequests.java
+@@ -132,8 +132,19 @@ public abstract class DrawRequests {
+         if (dstDrawable == null) throw new BadDrawable(dstDrawableId);
+ 
+         if (srcDrawable.isOffscreenStorage() && (srcDrawable.getData() == null || srcDrawable.isUseSharedData())) {
+-            dstDrawable.setData(null);
+-            dstDrawable.setTexture(srcDrawable.getTexture());
++            boolean coversDestination = srcX == 0 && srcY == 0 && dstX == 0 && dstY == 0 && width >= dstDrawable.width && height >= dstDrawable.height;
++            if (coversDestination) {
++                // The GPU-rendered window fills the destination (typical game): share its texture.
++                dstDrawable.setData(null);
++                dstDrawable.setTexture(srcDrawable.getTexture());
++            }
++            else {
++                // Only part of the destination, e.g. one of several Direct3D child windows (Roblox
++                // Studio's top bar and viewport): draw it there at its own size instead of replacing
++                // (and stretching over) the whole destination window.
++                dstDrawable.setOverlay(srcDrawable, (short)(dstX - srcX), (short)(dstY - srcY));
++                client.xServer.getRenderer().xServerView.requestRender();
++            }
+ 
+             if (srcDrawableId != client.xServer.activity.frameRatingWindowId) {
+                 Window srcWindow =  client.xServer.windowManager.getWindow(srcDrawableId);
 diff --git a/app/src/main/res/layout/studio_launcher_activity.xml b/app/src/main/res/layout/studio_launcher_activity.xml
 new file mode 100644
 index 0000000..51f7d5b
